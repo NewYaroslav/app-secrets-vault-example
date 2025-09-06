@@ -1,2 +1,2 @@
 # app-secrets-vault-example
-C++11 example: encrypt app secrets with AES-GCM, derive keys via PBKDF2, serialize to JSON/Base64.
+A minimal C++11 secrets vault for apps using PBKDF2 (from hmac-cpp) and AES-GCM (from aes-cpp). Stores email/password in JSON with Base64 fields {ver,iters,salt,iv,ct,tag}; optional code obfuscation via obfy.
