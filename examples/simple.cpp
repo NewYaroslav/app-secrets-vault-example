@@ -13,9 +13,6 @@
 #include <hmac_cpp/secret_string.hpp>
 #include <obfy/obfy_str.hpp>
 
-using namespace aes_cpp;
-using namespace hmac_cpp;
-
 static std::vector<uint8_t> to_bytes(const std::string& s) {
     return std::vector<uint8_t>(s.begin(), s.end());
 }
@@ -38,7 +35,7 @@ static std::array<uint8_t,32> derive_key(const std::string& password,
                                          uint32_t iters) {
     auto pw = to_bytes(password);
     auto pep = to_bytes(pepper());
-    auto key_vec = pbkdf2_with_pepper(pw, salt, pep, iters, 32);
+    auto key_vec = hmac_cpp::pbkdf2_with_pepper(pw, salt, pep, iters, 32);
     std::array<uint8_t,32> key{};
     std::copy(key_vec.begin(), key_vec.end(), key.begin());
     return key;
@@ -64,11 +61,11 @@ int main() {
 
         std::string payload = email + ":" + pass;
 
-        auto salt = random_bytes(16);
+        auto salt = hmac_cpp::random_bytes(16);
         auto key  = derive_key(master, salt, iters);
 
         std::vector<uint8_t> aad_bytes(aad.begin(), aad.end());
-        auto enc = utils::encrypt_gcm(payload, key, aad_bytes);
+        auto enc = aes_cpp::utils::encrypt_gcm(payload, key, aad_bytes);
 
         std::string serialized =
             std::to_string(iters) + ":" +
@@ -94,14 +91,14 @@ int main() {
 
         auto key2 = derive_key(master, salt2, iters2);
 
-        utils::GcmEncryptedData packet;
+        aes_cpp::utils::GcmEncryptedData packet;
         std::copy(iv2.begin(), iv2.end(), packet.iv.begin());
         packet.ciphertext = ct2;
         std::copy(tag2.begin(), tag2.end(), packet.tag.begin());
 
-        std::string plain = utils::decrypt_gcm_to_string(packet, key2, aad_bytes);
+        std::string plain = aes_cpp::utils::decrypt_gcm_to_string(packet, key2, aad_bytes);
 
-        secret_string secret(plain);
+        hmac_cpp::secret_string secret(plain);
         std::cout << "Decoded: " << secret.reveal_copy() << std::endl;
         secret.clear();
     } catch (const std::exception& e) {
