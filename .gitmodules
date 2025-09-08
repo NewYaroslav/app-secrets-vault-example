@@ -1,0 +1,12 @@
+[submodule "third_party/obfy"]
+	path = third_party/obfy
+	url = https://github.com/NewYaroslav/obfy
+[submodule "third_party/aes-cpp"]
+	path = third_party/aes-cpp
+	url = https://github.com/NewYaroslav/aes-cpp
+[submodule "third_party/hmac-cpp"]
+	path = third_party/hmac-cpp
+	url = https://github.com/NewYaroslav/hmac-cpp
+[submodule "third_party/json"]
+	path = third_party/json
+	url = https://github.com/nlohmann/json
