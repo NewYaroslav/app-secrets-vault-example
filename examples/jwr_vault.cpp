@@ -16,9 +16,6 @@
 #include "json.hpp"
 using json = nlohmann::json;
 
-using namespace aes_cpp;
-using namespace hmac_cpp;
-
 struct VaultFile {
     uint32_t v = 1;
     uint32_t iters;
@@ -90,7 +87,7 @@ static std::array<uint8_t,32> derive_key(const std::string& password,
                                          uint32_t iters) {
     auto pw = to_bytes(password);
     auto pep = to_bytes(pepper());
-    auto vec = pbkdf2_with_pepper(pw, salt, pep, iters, 32);
+    auto vec = hmac_cpp::pbkdf2_with_pepper(pw, salt, pep, iters, 32);
     std::array<uint8_t,32> key{};
     std::copy(vec.begin(), vec.end(), key.begin());
     return key;
@@ -105,14 +102,14 @@ static VaultFile create_vault(const std::string& master_password,
     VaultFile vf;
     vf.v = 1;
     vf.iters = iters;
-    vf.salt = random_bytes(16);
+    vf.salt = hmac_cpp::random_bytes(16);
     auto key = derive_key(master_password, vf.salt, iters);
 
     json payload = { {"email", email}, {"password", password} };
     auto plain = to_bytes(payload.dump());
 
     std::vector<uint8_t> aad_bytes = to_bytes(aad);
-    auto enc = utils::encrypt_gcm(plain, key, aad_bytes);
+    auto enc = aes_cpp::utils::encrypt_gcm(plain, key, aad_bytes);
     vf.iv.assign(enc.iv.begin(), enc.iv.end());
     vf.ct  = std::move(enc.ciphertext);
     vf.tag.assign(enc.tag.begin(), enc.tag.end());
@@ -130,8 +127,8 @@ static json open_vault(const std::string& master_password, const VaultFile& vf) 
     std::copy(vf.tag.begin(), vf.tag.end(), tag.begin());
 
     std::vector<uint8_t> aad_bytes = to_bytes(vf.aad);
-    utils::GcmEncryptedData pkt{std::chrono::system_clock::now(), iv, vf.ct, tag};
-    auto plain = utils::decrypt_gcm_to_string(pkt, key, aad_bytes);
+    aes_cpp::utils::GcmEncryptedData pkt{std::chrono::system_clock::now(), iv, vf.ct, tag};
+    auto plain = aes_cpp::utils::decrypt_gcm_to_string(pkt, key, aad_bytes);
     return json::parse(plain);
 }
 
@@ -191,8 +188,8 @@ int main() {
         std::string read_token;
         std::ifstream("vault.jwr") >> read_token;
         auto payload = open_token(master, read_token);
-        secret_string em(payload.at("email").get<std::string>());
-        secret_string pw(payload.at("password").get<std::string>());
+        hmac_cpp::secret_string em(payload.at("email").get<std::string>());
+        hmac_cpp::secret_string pw(payload.at("password").get<std::string>());
         std::cout << "Decrypted email: "    << em.reveal_copy() << "\n";
         std::cout << "Decrypted password: " << pw.reveal_copy() << "\n";
         em.clear();
