@@ -76,9 +76,9 @@ static void test_simple() {
     packet.tag[0] ^= 1;
     bool failed = false;
     try {
-        auto fail_plain = utils::decrypt_gcm_to_string(packet, key2_arr, aad_bytes);
+        auto fail_plain = utils::decrypt_gcm(packet, key2_arr, aad_bytes);
         if (!fail_plain.empty()) {
-            hmac_cpp::secure_zero(&fail_plain[0], fail_plain.size());
+            hmac_cpp::secure_zero(fail_plain.data(), fail_plain.size());
         }
     } catch (const std::exception&) {
         failed = true;
