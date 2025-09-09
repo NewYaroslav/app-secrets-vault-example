@@ -252,6 +252,8 @@ int main(int argc, char** argv) {
     auto text = serialize_vault(vf);
     demo::atomic_write_file("vault.json", text);
     std::cout << "Saved JSON:\n" << text << "\n";
+    hmac_cpp::secure_zero(&text[0], text.size());
+    text.clear();
 
     std::ifstream ifs("vault.json");
     std::stringstream buffer; buffer << ifs.rdbuf();

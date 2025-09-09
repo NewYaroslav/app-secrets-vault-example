@@ -316,6 +316,8 @@ int main() {
     auto token = std::get<std::string>(std::move(token_res));
     demo::atomic_write_file("vault.jwr", token);
     std::cout << "Token: " << token << "\n";
+    hmac_cpp::secure_zero(&token[0], token.size());
+    token.clear();
 
     std::string read_token;
     std::ifstream("vault.jwr") >> read_token;
