@@ -162,7 +162,7 @@ create_vault(const std::string& master_password,
              const std::string& email,
              const std::string& password,
              uint32_t iters = 300000,
-             const std::string& aad = "app=demo;v=1") {
+             const std::string& aad = "") {
     VaultFile vf;
     vf.v = 1;
     vf.iters = iters;
@@ -180,15 +180,26 @@ create_vault(const std::string& master_password,
     std::string payload_str = payload.dump();
     hmac_cpp::secure_buffer<uint8_t, true> plain(std::move(payload_str));
 
-    std::vector<uint8_t> aad_bytes = to_bytes(aad);
+    hmac_cpp::secure_buffer<uint8_t, true> aad_buf;
+    if (aad.empty()) {
+        auto aad_tmp = OBFY_BYTES_ONCE("app=demo;v=1");
+        aad_buf = hmac_cpp::secure_buffer<uint8_t, true>(
+            std::vector<uint8_t>(aad_tmp.data(), aad_tmp.data() + aad_tmp.size()));
+        vf.aad.assign(aad_tmp.data(), aad_tmp.data() + aad_tmp.size());
+    } else {
+        aad_buf = hmac_cpp::secure_buffer<uint8_t, true>(
+            std::vector<uint8_t>(aad.begin(), aad.end()));
+        vf.aad = aad;
+    }
+    std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
     std::vector<uint8_t> plain_vec(plain.begin(), plain.end());
     auto enc = aes_cpp::utils::encrypt_gcm(plain_vec, key_arr, aad_bytes);
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
     hmac_cpp::secure_zero(plain_vec.data(), plain_vec.size());
+    hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
     vf.iv = hmac_cpp::secure_buffer<uint8_t, true>(std::vector<uint8_t>(enc.iv.begin(), enc.iv.end()));
     vf.ct = hmac_cpp::secure_buffer<uint8_t, true>(std::move(enc.ciphertext));
     vf.tag = hmac_cpp::secure_buffer<uint8_t, true>(std::vector<uint8_t>(enc.tag.begin(), enc.tag.end()));
-    vf.aad = aad;
     return vf;
 }
 
@@ -207,7 +218,9 @@ open_vault(const std::string& master_password, const VaultFile& vf) {
     if (vf.tag.size()!=tag.size()) return VaultError::ERR_GCM_TAG;
     std::copy(vf.tag.begin(), vf.tag.begin()+tag.size(), tag.begin());
 
-    std::vector<uint8_t> aad_bytes = to_bytes(vf.aad);
+    hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
+        std::vector<uint8_t>(vf.aad.begin(), vf.aad.end()));
+    std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
     std::vector<uint8_t> ct_vec(vf.ct.begin(), vf.ct.end());
     aes_cpp::utils::GcmEncryptedData pkt{std::chrono::system_clock::now(), iv, ct_vec, tag};
     std::string plain;
@@ -216,10 +229,12 @@ open_vault(const std::string& master_password, const VaultFile& vf) {
     } catch (...) {
         hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
         hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
+        hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
         return VaultError::ERR_GCM_TAG;
     }
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
     hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
+    hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
     try {
         auto j = json::parse(plain);
         hmac_cpp::secure_zero(&plain[0], plain.size());
