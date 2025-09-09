@@ -31,43 +31,61 @@ namespace pepper {
     }
     
     bool Provider::load(std::vector<uint8_t>& out) {
+        OBFY_BEGIN_CODE
         std::vector<StorageMode> chain = {pimpl_->cfg.primary};
         chain.insert(chain.end(), pimpl_->cfg.fallbacks.begin(), pimpl_->cfg.fallbacks.end());
         for (auto mode : chain) {
-            if (mode == StorageMode::OS_KEYCHAIN) {
-                if (os_keychain::available()) {
-                    if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) return true;
-                }
-            } else if (mode == StorageMode::MACHINE_BOUND) {
-                if (derive_machine(pimpl_->cfg, out)) return true;
-            } else if (mode == StorageMode::ENCRYPTED_FILE) {
-                if (encrypted_file::load(pimpl_->cfg, out)) return true;
-            }
+            OBFY_CASE(mode)
+                OBFY_WHEN(StorageMode::OS_KEYCHAIN) OBFY_DO
+                    OBFY_IF(os_keychain::available())
+                        if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) OBFY_RETURN(true);
+                    OBFY_ENDIF
+                    OBFY_BREAK
+                OBFY_DONE
+                OBFY_WHEN(StorageMode::MACHINE_BOUND) OBFY_DO
+                    if (derive_machine(pimpl_->cfg, out)) OBFY_RETURN(true);
+                    OBFY_BREAK
+                OBFY_DONE
+                OBFY_WHEN(StorageMode::ENCRYPTED_FILE) OBFY_DO
+                    if (encrypted_file::load(pimpl_->cfg, out)) OBFY_RETURN(true);
+                    OBFY_BREAK
+                OBFY_DONE
+            OBFY_ENDCASE
         }
-        return false;
+        OBFY_RETURN(false);
+        OBFY_END_CODE
     }
     
     bool Provider::ensure(std::vector<uint8_t>& out) {
+        OBFY_BEGIN_CODE
         std::vector<StorageMode> chain = {pimpl_->cfg.primary};
         chain.insert(chain.end(), pimpl_->cfg.fallbacks.begin(), pimpl_->cfg.fallbacks.end());
         for (auto mode : chain) {
-            if (mode == StorageMode::OS_KEYCHAIN) {
-                if (os_keychain::available()) {
-                    if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) return true;
+            OBFY_CASE(mode)
+                OBFY_WHEN(StorageMode::OS_KEYCHAIN) OBFY_DO
+                    OBFY_IF(os_keychain::available())
+                        if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) OBFY_RETURN(true);
+                        auto p = hmac_cpp::random_bytes(32);
+                        if (p.size() != 32) OBFY_RETURN(false); // ERR_RNG
+                        if (OBFY_CALL(os_keychain::store, pimpl_->cfg.key_id, p)) { out = p; OBFY_RETURN(true); }
+                    OBFY_ENDIF
+                    OBFY_BREAK
+                OBFY_DONE
+                OBFY_WHEN(StorageMode::MACHINE_BOUND) OBFY_DO
+                    if (derive_machine(pimpl_->cfg, out)) OBFY_RETURN(true);
+                    OBFY_BREAK
+                OBFY_DONE
+                OBFY_WHEN(StorageMode::ENCRYPTED_FILE) OBFY_DO
+                    if (encrypted_file::load(pimpl_->cfg, out)) OBFY_RETURN(true);
                     auto p = hmac_cpp::random_bytes(32);
-                    if (p.size() != 32) return false; // ERR_RNG
-                    if (OBFY_CALL(os_keychain::store, pimpl_->cfg.key_id, p)) { out = p; return true; }
-                }
-            } else if (mode == StorageMode::MACHINE_BOUND) {
-                if (derive_machine(pimpl_->cfg, out)) return true;
-            } else if (mode == StorageMode::ENCRYPTED_FILE) {
-                if (encrypted_file::load(pimpl_->cfg, out)) return true;
-                auto p = hmac_cpp::random_bytes(32);
-                if (p.size() != 32) return false; // ERR_RNG
-                if (encrypted_file::store(pimpl_->cfg, p)) { out = p; return true; }
-            }
+                    if (p.size() != 32) OBFY_RETURN(false); // ERR_RNG
+                    if (encrypted_file::store(pimpl_->cfg, p)) { out = p; OBFY_RETURN(true); }
+                    OBFY_BREAK
+                OBFY_DONE
+            OBFY_ENDCASE
         }
-        return false;
+        OBFY_RETURN(false);
+        OBFY_END_CODE
     }
 
 } // namespace pepper
