@@ -22,7 +22,11 @@ namespace pepper {
         if (ms.empty()) return false;
         auto ctx = std::string(OBFY_STR("pepper:v1"));
         auto prk = hmac_cpp::hkdf_extract_sha256(ms, cfg.app_salt);
-        out = hmac_cpp::hkdf_expand_sha256(prk, std::vector<uint8_t>(ctx.begin(), ctx.end()), 32);
+        auto key = hmac_cpp::hkdf_expand_sha256(prk, std::vector<uint8_t>(ctx.begin(), ctx.end()), 32);
+        out = key;
+        hmac_cpp::secure_zero(ms.data(), ms.size());
+        hmac_cpp::secure_zero(prk.data(), prk.size());
+        hmac_cpp::secure_zero(key.data(), key.size());
         return true;
     }
     
