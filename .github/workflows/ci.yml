@@ -13,21 +13,34 @@ on:
       - codex/**
 
 jobs:
-  build-linux-macos:
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
         std: [11, 17]
     steps:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
-      - name: Install Boost (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Boost
         run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
-      - name: Install Boost (macOS)
-        if: runner.os == 'macOS'
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        std: [11, 17]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Install Boost
         run: brew install boost
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }}
@@ -58,4 +71,3 @@ jobs:
         run: cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
-
