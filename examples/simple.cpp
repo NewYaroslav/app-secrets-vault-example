@@ -82,7 +82,9 @@ int main() {
         const std::string email  = "user@example.com";
         const std::string pass   = "s3cr3t!";
         const uint32_t iters = 300000;
-        const std::string aad = "demo1";
+        auto aad_tmp = OBFY_BYTES_ONCE("demo1");
+        hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
+            std::vector<uint8_t>(aad_tmp.data(), aad_tmp.data() + aad_tmp.size()));
 
         std::string payload = email + ":" + pass;
         std::vector<uint8_t> payload_vec(payload.begin(), payload.end());
@@ -93,7 +95,7 @@ int main() {
         auto salt = hmac_cpp::secure_buffer<uint8_t, true>(hmac_cpp::random_bytes(16));
         auto key  = derive_key(master, salt, iters);
 
-        std::vector<uint8_t> aad_bytes(aad.begin(), aad.end());
+        std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
         std::vector<uint8_t> plain_vec(plain_buf.begin(), plain_buf.end());
         auto enc = aes_cpp::utils::encrypt_gcm(plain_vec, key, aad_bytes);
         hmac_cpp::secure_zero(key.data(), key.size());
@@ -142,6 +144,7 @@ int main() {
         hmac_cpp::secure_zero(&plain[0], plain.size());
         std::cout << "Decoded: " << secret.reveal_copy() << std::endl;
         secret.clear();
+        hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
     } catch (const std::exception& e) {
         std::cerr << "ERR: " << e.what() << std::endl;
         return 1;
