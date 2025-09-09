@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.14)
 project(app_secrets_vault_example LANGUAGES CXX)
 
+if (MSVC)
+    set(PROJECT_COMPILE_OPTIONS /guard:cf /GS /Qspectre)
+    set(PROJECT_LINK_OPTIONS "")
+else()
+    set(PROJECT_COMPILE_OPTIONS -fsanitize=address,undefined -fvisibility=hidden -fno-plt)
+    set(PROJECT_LINK_OPTIONS -fsanitize=address,undefined)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
