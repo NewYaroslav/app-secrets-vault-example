@@ -13,21 +13,52 @@ on:
       - codex/**
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
         std: [11, 17]
     steps:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
-      - name: Install Boost (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install Boost
         run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        std: [11, 17]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Install Boost
+        run: brew install boost
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        std: [11, 17]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
       - name: Install Boost (Windows)
-        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           choco install boost-msvc-14.3 -y --no-progress --prerelease
@@ -35,7 +66,7 @@ jobs:
           "BOOST_ROOT=$($boost.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "$($boost.FullName)\lib64-msvc-14.3" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DCMAKE_CXX_FLAGS="/sdl /guard:cf"
       - name: Build
         run: cmake --build build --config Release
       - name: Test
