@@ -10,4 +10,7 @@ add_executable(pepper_tests
     ../examples/pepper/encrypted_file.cpp)
 target_include_directories(pepper_tests PRIVATE ../examples/pepper)
 target_link_libraries(pepper_tests PRIVATE aes_cpp::aes_cpp hmac_cpp::hmac_cpp obfy)
+if (WIN32)
+    target_link_libraries(pepper_tests PRIVATE crypt32)
+endif()
 add_test(NAME pepper_tests COMMAND pepper_tests)

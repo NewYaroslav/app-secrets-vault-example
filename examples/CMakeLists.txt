@@ -12,3 +12,9 @@ target_link_libraries(example_json PRIVATE aes_cpp::aes_cpp hmac_cpp::hmac_cpp o
 
 add_executable(example_jwr jwr_vault.cpp ${pepper_src})
 target_link_libraries(example_jwr PRIVATE aes_cpp::aes_cpp hmac_cpp::hmac_cpp obfy)
+
+if (WIN32)
+    target_link_libraries(example_simple PRIVATE crypt32)
+    target_link_libraries(example_json PRIVATE crypt32)
+    target_link_libraries(example_jwr PRIVATE crypt32)
+endif()
