@@ -4,12 +4,10 @@
 #include <vector>
 #include "pepper_provider.hpp"
 
-namespace pepper {
-namespace machine_bound {
+namespace pepper::machine_bound {
 
-std::vector<uint8_t> get_machine_secret(const Config& cfg);
+    std::vector<uint8_t> get_machine_secret(const Config& cfg);
 
-} // namespace machine_bound
-} // namespace pepper
+} // namespace pepper::machine_bound
 
 #endif // PEPPER_MACHINE_BOUND_HPP
