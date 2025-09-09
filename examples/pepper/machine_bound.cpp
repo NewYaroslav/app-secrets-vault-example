@@ -12,8 +12,16 @@ namespace pepper::machine_bound {
         if (f) {
             std::getline(f, id);
         }
-        const char* user = std::getenv("USER");
-        if (user) id += user;
+        #ifdef _WIN32
+        char* user = nullptr;
+        size_t user_sz = 0;
+        if (_dupenv_s(&user, &user_sz, "USERNAME") == 0 && user) {
+            id += user;
+            free(user);
+        }
+        #else
+        if (const char* user = std::getenv("USER")) id += user;
+        #endif
         if (id.empty()) return {};
         auto ms = hmac_hash::sha256(id.data(), id.size());
         hmac_cpp::secure_zero(id.data(), id.size());

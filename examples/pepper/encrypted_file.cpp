@@ -15,8 +15,19 @@ namespace pepper::encrypted_file {
 
     static std::string resolve_path(const Config& cfg) {
         if (!cfg.file_path.empty()) return cfg.file_path;
-        const char* home = std::getenv("HOME");
-        if (home) return std::string(home) + "/pepper.bin";
+        #ifdef _WIN32
+        char* home = nullptr;
+        size_t home_sz = 0;
+        if (_dupenv_s(&home, &home_sz, "USERPROFILE") == 0 && home) {
+            std::string path(home);
+            free(home);
+            return path + "\\pepper.bin";
+        }
+        #else
+        if (const char* home = std::getenv("HOME")) {
+            return std::string(home) + "/pepper.bin";
+        }
+        #endif
         return "pepper.bin";
     }
     
