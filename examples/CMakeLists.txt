@@ -19,6 +19,12 @@ target_link_libraries(example_jwr PRIVATE aes_cpp::aes_cpp hmac_cpp::hmac_cpp ob
 target_compile_options(example_jwr PRIVATE ${PROJECT_COMPILE_OPTIONS})
 target_link_options(example_jwr PRIVATE ${PROJECT_LINK_OPTIONS})
 
+if (APPLE)
+    target_link_libraries(example_simple PRIVATE "-framework Security" "-framework CoreFoundation")
+    target_link_libraries(example_json PRIVATE "-framework Security" "-framework CoreFoundation")
+    target_link_libraries(example_jwr PRIVATE "-framework Security" "-framework CoreFoundation")
+endif()
+
 if (WIN32)
     target_link_libraries(example_simple PRIVATE crypt32)
     target_link_libraries(example_json PRIVATE crypt32)
