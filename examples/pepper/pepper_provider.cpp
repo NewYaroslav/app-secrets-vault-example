@@ -55,6 +55,7 @@ namespace pepper {
                 if (os_keychain::available()) {
                     if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) return true;
                     auto p = hmac_cpp::random_bytes(32);
+                    if (p.size() != 32) return false; // ERR_RNG
                     if (OBFY_CALL(os_keychain::store, pimpl_->cfg.key_id, p)) { out = p; return true; }
                 }
             } else if (mode == StorageMode::MACHINE_BOUND) {
@@ -62,6 +63,7 @@ namespace pepper {
             } else if (mode == StorageMode::ENCRYPTED_FILE) {
                 if (encrypted_file::load(pimpl_->cfg, out)) return true;
                 auto p = hmac_cpp::random_bytes(32);
+                if (p.size() != 32) return false; // ERR_RNG
                 if (encrypted_file::store(pimpl_->cfg, p)) { out = p; return true; }
             }
         }

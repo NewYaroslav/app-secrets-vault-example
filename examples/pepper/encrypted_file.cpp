@@ -22,6 +22,7 @@ namespace pepper::encrypted_file {
     
     bool store(const Config& cfg, const std::vector<uint8_t>& data) {
         auto path = resolve_path(cfg);
+        if (data.size() != 32) return false;
         auto ms = machine_bound::get_machine_secret(cfg);
         if (ms.empty()) return false;
         auto prk = hmac_cpp::hkdf_extract_sha256(ms, cfg.app_salt);
@@ -30,12 +31,25 @@ namespace pepper::encrypted_file {
         std::array<uint8_t,32> key_arr{};
         std::copy(key.begin(), key.end(), key_arr.begin());
         auto enc = aes_cpp::utils::encrypt_gcm(data, key_arr, {});
+        if (enc.iv.size() != 12 || enc.ciphertext.size() != data.size() || enc.tag.size() != 16) {
+            hmac_cpp::secure_zero(ms.data(), ms.size());
+            hmac_cpp::secure_zero(prk.data(), prk.size());
+            hmac_cpp::secure_zero(key.data(), key.size());
+            hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
+            hmac_cpp::secure_zero(enc.iv.data(), enc.iv.size());
+            hmac_cpp::secure_zero(enc.ciphertext.data(), enc.ciphertext.size());
+            hmac_cpp::secure_zero(enc.tag.data(), enc.tag.size());
+            return false;
+        }
         std::ofstream of(path.c_str(), std::ios::binary);
         if (!of) {
             hmac_cpp::secure_zero(ms.data(), ms.size());
             hmac_cpp::secure_zero(prk.data(), prk.size());
             hmac_cpp::secure_zero(key.data(), key.size());
             hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
+            hmac_cpp::secure_zero(enc.iv.data(), enc.iv.size());
+            hmac_cpp::secure_zero(enc.ciphertext.data(), enc.ciphertext.size());
+            hmac_cpp::secure_zero(enc.tag.data(), enc.tag.size());
             return false;
         }
         auto magic = OBFY_BYTES("PPR1");
@@ -48,6 +62,9 @@ namespace pepper::encrypted_file {
         hmac_cpp::secure_zero(prk.data(), prk.size());
         hmac_cpp::secure_zero(key.data(), key.size());
         hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
+        hmac_cpp::secure_zero(enc.iv.data(), enc.iv.size());
+        hmac_cpp::secure_zero(enc.ciphertext.data(), enc.ciphertext.size());
+        hmac_cpp::secure_zero(enc.tag.data(), enc.tag.size());
         return ok;
     }
     
@@ -65,7 +82,12 @@ namespace pepper::encrypted_file {
         inf.read(reinterpret_cast<char*>(ct.data()), ct.size());
         std::array<uint8_t,16> tag{};
         inf.read(reinterpret_cast<char*>(tag.data()), tag.size());
-        if (!inf) return false;
+        if (!inf) {
+            hmac_cpp::secure_zero(iv.data(), iv.size());
+            hmac_cpp::secure_zero(ct.data(), ct.size());
+            hmac_cpp::secure_zero(tag.data(), tag.size());
+            return false;
+        }
         auto ms = machine_bound::get_machine_secret(cfg);
         if (ms.empty()) return false;
         auto prk = hmac_cpp::hkdf_extract_sha256(ms, cfg.app_salt);
@@ -78,11 +100,17 @@ namespace pepper::encrypted_file {
         packet.ciphertext = ct;
         packet.tag = tag;
         out = aes_cpp::utils::decrypt_gcm(packet, key_arr, {});
+        bool ok = out.size() == 32;
         hmac_cpp::secure_zero(ms.data(), ms.size());
         hmac_cpp::secure_zero(prk.data(), prk.size());
         hmac_cpp::secure_zero(key.data(), key.size());
         hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
-        return true;
+        hmac_cpp::secure_zero(ct.data(), ct.size());
+        hmac_cpp::secure_zero(packet.ciphertext.data(), packet.ciphertext.size());
+        if (!ok) {
+            hmac_cpp::secure_zero(out.data(), out.size());
+        }
+        return ok;
     }
 
 } // namespace pepper::encrypted_file
