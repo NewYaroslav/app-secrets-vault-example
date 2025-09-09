@@ -72,6 +72,19 @@ static void test_simple() {
     packet.ciphertext = std::vector<uint8_t>(ct2.begin(), ct2.end());
     std::copy(tag2.begin(), tag2.begin()+packet.tag.size(), packet.tag.begin());
     auto plain = utils::decrypt_gcm_to_string(packet, key2_arr, aad_bytes);
+
+    packet.tag[0] ^= 1;
+    bool failed = false;
+    try {
+        auto fail_plain = utils::decrypt_gcm_to_string(packet, key2_arr, aad_bytes);
+        if (!fail_plain.empty()) {
+            hmac_cpp::secure_zero(&fail_plain[0], fail_plain.size());
+        }
+    } catch (const std::exception&) {
+        failed = true;
+    }
+    assert(failed);
+
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
     hmac_cpp::secure_zero(key2_arr.data(), key2_arr.size());
     hmac_cpp::secure_buffer<uint8_t, true> plain_buf(std::move(plain));
