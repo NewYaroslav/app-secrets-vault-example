@@ -6,13 +6,11 @@
 #include <cstdint>
 #include "pepper_provider.hpp"
 
-namespace pepper {
-namespace encrypted_file {
+namespace pepper::encrypted_file {
 
-bool load(const Config& cfg, std::vector<uint8_t>& out);
-bool store(const Config& cfg, const std::vector<uint8_t>& data);
+    bool load(const Config& cfg, std::vector<uint8_t>& out);
+    bool store(const Config& cfg, const std::vector<uint8_t>& data);
 
-} // namespace encrypted_file
-} // namespace pepper
+} // namespace pepper::encrypted_file
 
 #endif // PEPPER_ENCRYPTED_FILE_HPP
