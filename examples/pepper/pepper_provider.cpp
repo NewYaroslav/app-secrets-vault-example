@@ -9,6 +9,13 @@
 
 namespace pepper {
 
+    // Wrapper for obfuscated branching; default initialization keeps MSVC happy
+    struct ModeCase {
+        StorageMode value;
+        ModeCase(StorageMode v = StorageMode::OS_KEYCHAIN) : value(v) {}
+        bool operator==(const ModeCase& other) const { return value == other.value; }
+    };
+
     struct Provider::Impl {
         Config cfg;
         explicit Impl(const Config& c) : cfg(c) {}
@@ -35,18 +42,19 @@ namespace pepper {
         std::vector<StorageMode> chain = {pimpl_->cfg.primary};
         chain.insert(chain.end(), pimpl_->cfg.fallbacks.begin(), pimpl_->cfg.fallbacks.end());
         for (auto mode : chain) {
-            OBFY_CASE(mode)
-                OBFY_WHEN(StorageMode::OS_KEYCHAIN) OBFY_DO
+            ModeCase current(mode);
+            OBFY_CASE(current)
+                OBFY_WHEN(ModeCase{StorageMode::OS_KEYCHAIN}) OBFY_DO
                     OBFY_IF(os_keychain::available())
                         if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) OBFY_RETURN(true);
                     OBFY_ENDIF
                     OBFY_BREAK
                 OBFY_DONE
-                OBFY_WHEN(StorageMode::MACHINE_BOUND) OBFY_DO
+                OBFY_WHEN(ModeCase{StorageMode::MACHINE_BOUND}) OBFY_DO
                     if (derive_machine(pimpl_->cfg, out)) OBFY_RETURN(true);
                     OBFY_BREAK
                 OBFY_DONE
-                OBFY_WHEN(StorageMode::ENCRYPTED_FILE) OBFY_DO
+                OBFY_WHEN(ModeCase{StorageMode::ENCRYPTED_FILE}) OBFY_DO
                     if (encrypted_file::load(pimpl_->cfg, out)) OBFY_RETURN(true);
                     OBFY_BREAK
                 OBFY_DONE
@@ -61,8 +69,9 @@ namespace pepper {
         std::vector<StorageMode> chain = {pimpl_->cfg.primary};
         chain.insert(chain.end(), pimpl_->cfg.fallbacks.begin(), pimpl_->cfg.fallbacks.end());
         for (auto mode : chain) {
-            OBFY_CASE(mode)
-                OBFY_WHEN(StorageMode::OS_KEYCHAIN) OBFY_DO
+            ModeCase current(mode);
+            OBFY_CASE(current)
+                OBFY_WHEN(ModeCase{StorageMode::OS_KEYCHAIN}) OBFY_DO
                     OBFY_IF(os_keychain::available())
                         if (OBFY_CALL(os_keychain::load, pimpl_->cfg.key_id, out)) OBFY_RETURN(true);
                         auto p = hmac_cpp::random_bytes(32);
@@ -71,11 +80,11 @@ namespace pepper {
                     OBFY_ENDIF
                     OBFY_BREAK
                 OBFY_DONE
-                OBFY_WHEN(StorageMode::MACHINE_BOUND) OBFY_DO
+                OBFY_WHEN(ModeCase{StorageMode::MACHINE_BOUND}) OBFY_DO
                     if (derive_machine(pimpl_->cfg, out)) OBFY_RETURN(true);
                     OBFY_BREAK
                 OBFY_DONE
-                OBFY_WHEN(StorageMode::ENCRYPTED_FILE) OBFY_DO
+                OBFY_WHEN(ModeCase{StorageMode::ENCRYPTED_FILE}) OBFY_DO
                     if (encrypted_file::load(pimpl_->cfg, out)) OBFY_RETURN(true);
                     auto p = hmac_cpp::random_bytes(32);
                     if (p.size() != 32) OBFY_RETURN(false); // ERR_RNG
