@@ -31,13 +31,24 @@ namespace pepper::encrypted_file {
         std::copy(key.begin(), key.end(), key_arr.begin());
         auto enc = aes_cpp::utils::encrypt_gcm(data, key_arr, {});
         std::ofstream of(path.c_str(), std::ios::binary);
-        if (!of) return false;
+        if (!of) {
+            hmac_cpp::secure_zero(ms.data(), ms.size());
+            hmac_cpp::secure_zero(prk.data(), prk.size());
+            hmac_cpp::secure_zero(key.data(), key.size());
+            hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
+            return false;
+        }
         auto magic = OBFY_BYTES("PPR1");
         of.write(reinterpret_cast<const char*>(magic),4);
         of.write(reinterpret_cast<const char*>(enc.iv.data()), enc.iv.size());
         of.write(reinterpret_cast<const char*>(enc.ciphertext.data()), enc.ciphertext.size());
         of.write(reinterpret_cast<const char*>(enc.tag.data()), enc.tag.size());
-        return of.good();
+        bool ok = of.good();
+        hmac_cpp::secure_zero(ms.data(), ms.size());
+        hmac_cpp::secure_zero(prk.data(), prk.size());
+        hmac_cpp::secure_zero(key.data(), key.size());
+        hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
+        return ok;
     }
     
     bool load(const Config& cfg, std::vector<uint8_t>& out) {
@@ -67,6 +78,10 @@ namespace pepper::encrypted_file {
         packet.ciphertext = ct;
         packet.tag = tag;
         out = aes_cpp::utils::decrypt_gcm(packet, key_arr, {});
+        hmac_cpp::secure_zero(ms.data(), ms.size());
+        hmac_cpp::secure_zero(prk.data(), prk.size());
+        hmac_cpp::secure_zero(key.data(), key.size());
+        hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
         return true;
     }
 
