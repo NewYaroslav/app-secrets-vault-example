@@ -6,6 +6,7 @@
 #include <string>
 #include <array>
 #include <chrono>
+#include <memory>
 
 #include <aes_cpp/aes_utils.hpp>
 #include <hmac_cpp/hmac_utils.hpp>
@@ -41,16 +42,33 @@ static std::string b64enc(const hmac_cpp::secure_buffer<uint8_t, true>& v) {
     return hmac_cpp::base64_encode(v.data(), v.size());
 }
 
+// runtime flags parsed from command line
+static std::string g_pepper_mode = "keystore";
+static bool g_deny_fallback = false;
+
+static const char* kPepperKeyId = OBFY_STR("com.newyaroslav.app/v1/pepper");
+
+static pepper::Provider& provider() {
+    static std::unique_ptr<pepper::Provider> prov;
+    if (!prov) {
+        pepper::Config cfg;
+        cfg.key_id = kPepperKeyId;
+        auto s = OBFY_BYTES("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10");
+        cfg.app_salt = std::vector<uint8_t>(s, s + 16);
+        if (g_pepper_mode == "derived") cfg.primary = pepper::StorageMode::MACHINE_BOUND;
+        else if (g_pepper_mode == "file") cfg.primary = pepper::StorageMode::ENCRYPTED_FILE;
+        else cfg.primary = pepper::StorageMode::OS_KEYCHAIN;
+        if (g_deny_fallback) cfg.fallbacks.clear();
+        prov = std::make_unique<pepper::Provider>(cfg);
+    }
+    return *prov;
+}
+
 static const hmac_cpp::secure_buffer<uint8_t, true>& app_pepper() {
     static hmac_cpp::secure_buffer<uint8_t, true> p;
     if (p.size()==0) {
-        pepper::Config cfg;
-        cfg.key_id = OBFY_STR("pepper:v1");
-        auto s = OBFY_BYTES("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10");
-        cfg.app_salt = std::vector<uint8_t>(s, s + 16);
-        pepper::Provider prov(cfg);
         std::vector<uint8_t> tmp;
-        if (!prov.ensure(tmp)) throw std::runtime_error("pepper");
+        if (!provider().ensure(tmp)) throw std::runtime_error("pepper");
         p = hmac_cpp::secure_buffer<uint8_t, true>(std::move(tmp));
     }
     return p;
@@ -59,18 +77,8 @@ static const hmac_cpp::secure_buffer<uint8_t, true>& app_pepper() {
 static std::string serialize_vault(const VaultFile& vf) {
     json j;
     j["v"] = vf.v;
-    j["aead"] = "AES-256-GCM";
-    j["kdf"] = {
-        {"prf","PBKDF2-HMAC-SHA256"},
-        {"iters", vf.iters},
-        {"salt", b64enc(vf.salt)}
-    };
-    j["enc"] = {
-        {"iv",  b64enc(vf.iv)},
-        {"ct",  b64enc(vf.ct)},
-        {"tag", b64enc(vf.tag)}
-    };
-    if (!vf.aad.empty()) j["aad"] = vf.aad;
+    j["kdf"] = {{"alg", "pbkdf2-hmac-sha256"}, {"iters", vf.iters}, {"salt", b64enc(vf.salt)}};
+    j["aead"] = {{"alg", "aes-256-gcm"}, {"iv", b64enc(vf.iv)}, {"aad", vf.aad}, {"ct", b64enc(vf.ct)}, {"tag", b64enc(vf.tag)}};
     return j.dump(2);
 }
 
@@ -79,22 +87,24 @@ static VaultFile parse_vault(const std::string& s) {
     VaultFile vf;
     vf.v = j.at("v").get<uint32_t>();
     if (vf.v != 1) throw std::runtime_error("bad version");
-    if (j.at("aead").get<std::string>() != "AES-256-GCM")
-        throw std::runtime_error("bad aead");
     auto jk = j.at("kdf");
+    if (jk.at("alg").get<std::string>() != "pbkdf2-hmac-sha256")
+        throw std::runtime_error("bad kdf alg");
     vf.iters = jk.at("iters").get<uint32_t>();
     if (vf.iters < 100000 || vf.iters > 1000000)
         throw std::runtime_error("bad iters");
     vf.salt  = b64dec(jk.at("salt").get<std::string>());
     if (vf.salt.size() < 16 || vf.salt.size() > 32)
         throw std::runtime_error("bad salt size");
-    auto je = j.at("enc");
-    vf.iv   = b64dec(je.at("iv").get<std::string>());
+    auto ja = j.at("aead");
+    if (ja.at("alg").get<std::string>() != "aes-256-gcm")
+        throw std::runtime_error("bad aead alg");
+    vf.iv   = b64dec(ja.at("iv").get<std::string>());
     if (vf.iv.size() != 12) throw std::runtime_error("bad iv size");
-    vf.ct   = b64dec(je.at("ct").get<std::string>());
-    vf.tag  = b64dec(je.at("tag").get<std::string>());
+    vf.ct   = b64dec(ja.at("ct").get<std::string>());
+    vf.tag  = b64dec(ja.at("tag").get<std::string>());
     if (vf.tag.size() != 16) throw std::runtime_error("bad tag size");
-    vf.aad  = j.value("aad", "");
+    vf.aad  = ja.value("aad", "");
     return vf;
 }
 
@@ -120,7 +130,9 @@ static VaultFile create_vault(const std::string& master_password,
     VaultFile vf;
     vf.v = 1;
     vf.iters = iters;
-    vf.salt = hmac_cpp::secure_buffer<uint8_t, true>(hmac_cpp::random_bytes(16));
+    auto salt_vec = hmac_cpp::random_bytes(16);
+    if (salt_vec.size() != 16) throw std::runtime_error("rng");
+    vf.salt = hmac_cpp::secure_buffer<uint8_t, true>(std::move(salt_vec));
     auto key = derive_key(master_password, vf.salt, iters);
     std::array<uint8_t,32> key_arr{};
     std::copy(key.begin(), key.begin()+key_arr.size(), key_arr.begin());
@@ -161,13 +173,20 @@ static json open_vault(const std::string& master_password, const VaultFile& vf) 
     return j;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg.rfind("--pepper=", 0) == 0) g_pepper_mode = arg.substr(9);
+        else if (arg == "--deny-fallback") g_deny_fallback = true;
+    }
     try {
         const std::string master = "correct horse battery staple";
         const std::string email   = "user@example.com";
         const std::string pass    = "s3cr3t!";
 
-        auto vf = create_vault(master, email, pass, 300000, "app=demo;v=1");
+        auto aad_tmp = OBFY_BYTES_ONCE("app://secrets/blob/v1");
+        std::string aad(reinterpret_cast<const char*>(aad_tmp.data()), aad_tmp.size());
+        auto vf = create_vault(master, email, pass, 300000, aad);
         auto text = serialize_vault(vf);
         demo::atomic_write_file("vault.json", text);
         std::cout << "Saved JSON:\n" << text << "\n";

@@ -93,29 +93,30 @@ struct VaultFile {
 static std::string serialize_vault(const VaultFile& vf) {
     json j;
     j["v"] = vf.v;
-    j["aead"] = "AES-256-GCM";
-    j["kdf"] = {{"prf","PBKDF2-HMAC-SHA256"},{"iters",vf.iters},{"salt",b64enc(vf.salt)}};
-    j["enc"] = {{"iv",b64enc(vf.iv)},{"ct",b64enc(vf.ct)},{"tag",b64enc(vf.tag)}};
-    if(!vf.aad.empty()) j["aad"]=vf.aad;
+    j["kdf"] = {{"alg","pbkdf2-hmac-sha256"},{"iters",vf.iters},{"salt",b64enc(vf.salt)}};
+    j["aead"] = {{"alg","aes-256-gcm"},{"iv",b64enc(vf.iv)},{"aad",vf.aad},{"ct",b64enc(vf.ct)},{"tag",b64enc(vf.tag)}};
     return j.dump();
 }
 static VaultFile parse_vault(const std::string& s) {
     auto j = json::parse(s);
     VaultFile vf; vf.v=j.at("v").get<uint32_t>();
     if(vf.v!=1) throw std::runtime_error("bad version");
-    if (j.at("aead").get<std::string>()!="AES-256-GCM") throw std::runtime_error("bad aead");
-    auto jk=j.at("kdf"); vf.iters=jk.at("iters").get<uint32_t>();
+    auto jk=j.at("kdf");
+    if(jk.at("alg").get<std::string>()!="pbkdf2-hmac-sha256") throw std::runtime_error("bad kdf alg");
+    vf.iters=jk.at("iters").get<uint32_t>();
     if(vf.iters<100000||vf.iters>1000000) throw std::runtime_error("bad iters");
     vf.salt=b64dec(jk.at("salt").get<std::string>());
     if(vf.salt.size()<16||vf.salt.size()>32) throw std::runtime_error("bad salt size");
-    auto je=j.at("enc"); vf.iv=b64dec(je.at("iv").get<std::string>()); if(vf.iv.size()!=12) throw std::runtime_error("bad iv size");
-    vf.ct=b64dec(je.at("ct").get<std::string>());
-    vf.tag=b64dec(je.at("tag").get<std::string>()); if(vf.tag.size()!=16) throw std::runtime_error("bad tag size");
-    vf.aad=j.value("aad","");
+    auto ja=j.at("aead");
+    if(ja.at("alg").get<std::string>()!="aes-256-gcm") throw std::runtime_error("bad aead alg");
+    vf.iv=b64dec(ja.at("iv").get<std::string>()); if(vf.iv.size()!=12) throw std::runtime_error("bad iv size");
+    vf.ct=b64dec(ja.at("ct").get<std::string>());
+    vf.tag=b64dec(ja.at("tag").get<std::string>()); if(vf.tag.size()!=16) throw std::runtime_error("bad tag size");
+    vf.aad=ja.value("aad","");
     return vf;
 }
 static VaultFile create_vault(const std::string& master,const std::string& email,const std::string& password,uint32_t iters,const std::string& aad){
-    VaultFile vf; vf.v=1; vf.iters=iters; vf.salt=hmac_cpp::secure_buffer<uint8_t,true>(random_bytes(16)); auto key=derive_key(master,vf.salt,iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); json payload={{"email",email},{"password",password}}; std::string payload_str=payload.dump(); hmac_cpp::secure_buffer<uint8_t,true> plain(std::move(payload_str)); std::vector<uint8_t> aadb(aad.begin(),aad.end()); std::vector<uint8_t> plain_vec(plain.begin(),plain.end()); auto enc=utils::encrypt_gcm(plain_vec,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(plain_vec.data(),plain_vec.size()); vf.iv=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.iv.begin(),enc.iv.end())); vf.ct=hmac_cpp::secure_buffer<uint8_t,true>(std::move(enc.ciphertext)); vf.tag=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.tag.begin(),enc.tag.end())); vf.aad=aad; return vf; }
+    VaultFile vf; vf.v=1; vf.iters=iters; auto salt_vec=random_bytes(16); if(salt_vec.size()!=16) throw std::runtime_error("rng"); vf.salt=hmac_cpp::secure_buffer<uint8_t,true>(std::move(salt_vec)); auto key=derive_key(master,vf.salt,iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); json payload={{"email",email},{"password",password}}; std::string payload_str=payload.dump(); hmac_cpp::secure_buffer<uint8_t,true> plain(std::move(payload_str)); std::vector<uint8_t> aadb(aad.begin(),aad.end()); std::vector<uint8_t> plain_vec(plain.begin(),plain.end()); auto enc=utils::encrypt_gcm(plain_vec,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(plain_vec.data(),plain_vec.size()); vf.iv=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.iv.begin(),enc.iv.end())); vf.ct=hmac_cpp::secure_buffer<uint8_t,true>(std::move(enc.ciphertext)); vf.tag=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.tag.begin(),enc.tag.end())); vf.aad=aad; return vf; }
 static json open_vault(const std::string& master,const VaultFile& vf){ auto key=derive_key(master,vf.salt,vf.iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); std::array<uint8_t,12> iv{}; std::copy(vf.iv.begin(),vf.iv.begin()+iv.size(),iv.begin()); std::array<uint8_t,16> tag{}; std::copy(vf.tag.begin(),vf.tag.begin()+tag.size(),tag.begin()); std::vector<uint8_t> aadb(vf.aad.begin(),vf.aad.end()); std::vector<uint8_t> ct_vec(vf.ct.begin(),vf.ct.end()); utils::GcmEncryptedData pkt{std::chrono::system_clock::now(),iv,ct_vec,tag}; auto plain=utils::decrypt_gcm_to_string(pkt,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(ct_vec.data(),ct_vec.size()); auto r=json::parse(plain); hmac_cpp::secure_zero(&plain[0],plain.size()); return r; }
 
 static std::string b64url_encode(const hmac_cpp::secure_buffer<uint8_t, true>& d){ auto s=b64enc(d); std::replace(s.begin(),s.end(),'+','-'); std::replace(s.begin(),s.end(),'/','_'); while(!s.empty()&&s.back()=='=') s.pop_back(); return s; }
