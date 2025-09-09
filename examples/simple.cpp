@@ -12,6 +12,9 @@
 #include <hmac_cpp/encoding.hpp>
 #include <hmac_cpp/secret_string.hpp>
 #include <obfy/obfy_str.hpp>
+#include <obfy/obfy_bytes.hpp>
+
+#include "pepper/pepper_provider.hpp"
 
 static std::vector<uint8_t> to_bytes(const std::string& s) {
     return std::vector<uint8_t>(s.begin(), s.end());
@@ -26,15 +29,24 @@ static std::vector<uint8_t> b64dec(const std::string& s) {
     return out;
 }
 
-static std::string pepper() {
-    return std::string(OBFY_STR("demo_pepper"));
+static const std::vector<uint8_t>& app_pepper() {
+    static std::vector<uint8_t> p;
+    if (p.empty()) {
+        pepper::Config cfg;
+        cfg.key_id = OBFY_STR("pepper:v1");
+        auto s = OBFY_BYTES("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10");
+        cfg.app_salt = std::vector<uint8_t>(s, s + 16);
+        pepper::Provider prov(cfg);
+        if (!prov.ensure(p)) throw std::runtime_error("pepper");
+    }
+    return p;
 }
 
 static std::array<uint8_t,32> derive_key(const std::string& password,
                                          const std::vector<uint8_t>& salt,
                                          uint32_t iters) {
     auto pw = to_bytes(password);
-    auto pep = to_bytes(pepper());
+    const auto& pep = app_pepper();
     auto key_vec = hmac_cpp::pbkdf2_with_pepper(pw, salt, pep, iters, 32);
     std::array<uint8_t,32> key{};
     std::copy(key_vec.begin(), key_vec.end(), key.begin());
