@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(app_secrets_vault_example LANGUAGES CXX)
 
 if (MSVC)
+    add_compile_options(/wd4146)
     set(PROJECT_COMPILE_OPTIONS /guard:cf /GS /Qspectre)
     set(PROJECT_LINK_OPTIONS "")
 else()
