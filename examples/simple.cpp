@@ -98,7 +98,12 @@ bool write_vault(const std::string& path,
         hmac_cpp::secure_buffer<uint8_t, true> plain_buf(std::move(payload_vec));
         hmac_cpp::secure_zero(&payload[0], payload.size());
 
-        auto salt = hmac_cpp::secure_buffer<uint8_t, true>(hmac_cpp::random_bytes(16));
+        auto salt_vec = hmac_cpp::random_bytes(16);
+        if (salt_vec.size() != 16) {
+            hmac_cpp::secure_zero(salt_vec.data(), salt_vec.size());
+            return false;
+        }
+        auto salt = hmac_cpp::secure_buffer<uint8_t, true>(std::move(salt_vec));
         auto key  = derive_key(master, salt, iters);
 
         std::vector<uint8_t> plain_vec(plain_buf.begin(), plain_buf.end());
