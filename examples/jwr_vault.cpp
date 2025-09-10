@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cctype>
 
 #include <aes_cpp/aes_utils.hpp>
 #include <hmac_cpp/hmac_utils.hpp>
@@ -60,11 +61,13 @@ static std::string to_string(const std::vector<uint8_t>& v) {
 static std::string b64enc(const hmac_cpp::secure_buffer<uint8_t, true>& v) {
     return hmac_cpp::base64_encode(v.data(), v.size());
 }
-static expected<hmac_cpp::secure_buffer<uint8_t, true>, VaultError>
-b64dec(const std::string& s) {
+// Decode `s` from Base64 into `out`; reject non-Base64 input.
+static bool b64dec(const std::string& s,
+                   hmac_cpp::secure_buffer<uint8_t, true>& out) {
     std::vector<uint8_t> tmp;
-    if (!hmac_cpp::base64_decode(s, tmp)) return VaultError::ERR_FORMAT;
-    return hmac_cpp::secure_buffer<uint8_t, true>(std::move(tmp));
+    if (!hmac_cpp::base64_decode(s, tmp)) return false;
+    out = hmac_cpp::secure_buffer<uint8_t, true>(std::move(tmp));
+    return true;
 }
 
 static expected<std::reference_wrapper<const hmac_cpp::secure_buffer<uint8_t, true>>,
@@ -108,52 +111,50 @@ static std::string serialize_vault(const VaultFile& vf) {
     return j.dump();
 }
 
-static expected<VaultFile, VaultError> parse_vault(const std::string& s) {
+// Parse vault JSON and validate expected parameters.
+// Only a boolean result is returned to keep failures generic.
+static bool parse_vault(const std::string& s, VaultFile& vf) {
     try {
         auto j = json::parse(s);
-        VaultFile vf;
         vf.v = j.at("v").get<uint32_t>();
-        if (vf.v != 1) return VaultError::ERR_FORMAT;
+        if (vf.v != 1) return false; // only version 1 supported
         auto jk = j.at("kdf");
+        auto kdf_alg = jk.value("alg", jk.value("name", ""));
+        std::transform(kdf_alg.begin(), kdf_alg.end(), kdf_alg.begin(),
+                       [](unsigned char c){ return std::tolower(c); });
+        if (kdf_alg != "pbkdf2-hmac-sha256") return false; // unsupported KDF
         vf.iters = jk.at("iters").get<uint32_t>();
         if (vf.iters < 100000 || vf.iters > 1000000)
-            return VaultError::ERR_KDF_PARAM;
+            return false; // enforce PBKDF2 iteration range
         std::string salt_b64 = jk.at("salt").get<std::string>();
-        auto salt_res = b64dec(salt_b64);
+        if (!b64dec(salt_b64, vf.salt)) return false;
         hmac_cpp::secure_zero(&salt_b64[0], salt_b64.size());
-        if (std::holds_alternative<VaultError>(salt_res))
-            return std::get<VaultError>(salt_res);
-        vf.salt = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(salt_res));
+        if (vf.salt.size() < 16) return false; // min salt length
 
         auto ja = j.at("aead");
+        auto aead_alg = ja.value("alg", "");
+        std::transform(aead_alg.begin(), aead_alg.end(), aead_alg.begin(),
+                       [](unsigned char c){ return std::tolower(c); });
+        if (aead_alg != "aes-256-gcm") return false; // unsupported AEAD
         std::string iv_b64 = ja.at("iv").get<std::string>();
-        auto iv_res = b64dec(iv_b64);
+        if (!b64dec(iv_b64, vf.iv)) return false;
         hmac_cpp::secure_zero(&iv_b64[0], iv_b64.size());
-        if (std::holds_alternative<VaultError>(iv_res))
-            return std::get<VaultError>(iv_res);
-        vf.iv   = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(iv_res));
+        if (vf.iv.size() != 12) return false; // GCM standard IV size
         std::string tag_b64 = ja.at("tag").get<std::string>();
-        auto tag_res = b64dec(tag_b64);
+        if (!b64dec(tag_b64, vf.tag)) return false;
         hmac_cpp::secure_zero(&tag_b64[0], tag_b64.size());
-        if (std::holds_alternative<VaultError>(tag_res))
-            return std::get<VaultError>(tag_res);
-        vf.tag  = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(tag_res));
+        if (vf.tag.size() != 16) return false; // GCM tag size
 
         std::string ct_b64 = j.at("ciphertext").get<std::string>();
-        auto ct_res = b64dec(ct_b64);
+        if (!b64dec(ct_b64, vf.ct)) return false;
         hmac_cpp::secure_zero(&ct_b64[0], ct_b64.size());
-        if (std::holds_alternative<VaultError>(ct_res))
-            return std::get<VaultError>(ct_res);
-        vf.ct   = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(ct_res));
         std::string aad_b64 = j.value("aad", "");
-        auto aad_res = b64dec(aad_b64);
+        if (!b64dec(aad_b64, vf.aad)) return false;
         hmac_cpp::secure_zero(&aad_b64[0], aad_b64.size());
-        if (std::holds_alternative<VaultError>(aad_res))
-            return std::get<VaultError>(aad_res);
-        vf.aad  = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(aad_res));
-        return vf;
+        return true;
     } catch (...) {
-        return VaultError::ERR_FORMAT;
+        // Swallow details; callers only see success/failure.
+        return false;
     }
 }
 
@@ -305,12 +306,12 @@ open_token(const hmac_cpp::secret_string& master, const std::string& token) {
         return std::get<VaultError>(body_bytes_res);
     auto body_bytes = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(body_bytes_res));
     std::string body_str(body_bytes.begin(), body_bytes.end());
-    auto vf_res = parse_vault(body_str);
+    VaultFile vf;
+    bool ok = parse_vault(body_str, vf);
     hmac_cpp::secure_zero(&body_str[0], body_str.size());
     hmac_cpp::secure_zero(body_bytes.data(), body_bytes.size());
-    if (std::holds_alternative<VaultError>(vf_res))
-        return std::get<VaultError>(vf_res);
-    auto payload = open_vault(master, std::get<VaultFile>(std::move(vf_res)));
+    if (!ok) return VaultError::ERR_FORMAT;
+    auto payload = open_vault(master, vf);
     return payload;
 }
 
