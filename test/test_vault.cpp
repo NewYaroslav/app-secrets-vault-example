@@ -13,9 +13,12 @@
 #include <hmac_cpp/secret_string.hpp>
 #include <hmac_cpp/secure_buffer.hpp>
 #include <obfy/obfy_str.hpp>
+#include <obfy/obfy_bytes.hpp>
 
 #include "json.hpp"
 using json = nlohmann::json;
+
+static const auto aad = OBFY_BYTES_ONCE("app://secrets/blob/v1");
 
 static hmac_cpp::secure_buffer<uint8_t, true> pepper() {
     return hmac_cpp::secure_buffer<uint8_t, true>(std::string(OBFY_STR("demo_pepper")));
@@ -44,12 +47,11 @@ static void test_simple() {
     const hmac_cpp::secret_string master("m");
     const hmac_cpp::secret_string payload("a:b");
     const uint32_t iters = 1000;
-    const std::string aad = "t";
 
     hmac_cpp::secure_buffer<uint8_t, true> salt(hmac_cpp::random_bytes(16));
     auto key  = derive_key(master, salt, iters);
     std::array<uint8_t,32> key_arr{}; std::copy(key.begin(), key.begin()+key_arr.size(), key_arr.begin());
-    std::vector<uint8_t> aad_bytes(aad.begin(), aad.end());
+    std::vector<uint8_t> aad_bytes(aad.data(), aad.data() + aad.size());
     std::string payload_copy = payload.reveal_copy();
     std::vector<uint8_t> payload_vec(payload_copy.begin(), payload_copy.end());
     hmac_cpp::secure_zero(&payload_copy[0], payload_copy.size());
@@ -96,6 +98,7 @@ static void test_simple() {
     hmac_cpp::secure_zero(&payload_cmp[0], payload_cmp.size());
     assert(hmac_cpp::constant_time_equal(plain_buf.data(), plain_buf.size(),
                                         payload_buf.data(), payload_buf.size()));
+    hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
 }
 
 struct VaultFile {
@@ -105,14 +108,14 @@ struct VaultFile {
     hmac_cpp::secure_buffer<uint8_t, true> iv;
     hmac_cpp::secure_buffer<uint8_t, true> tag;
     hmac_cpp::secure_buffer<uint8_t, true> ct;
-    std::string aad;
+    hmac_cpp::secure_buffer<uint8_t, true> aad;
 };
 
 static std::string serialize_vault(const VaultFile& vf) {
     json j;
     j["v"] = vf.v;
     j["kdf"] = {{"alg","pbkdf2-hmac-sha256"},{"iters",vf.iters},{"salt",b64enc(vf.salt)}};
-    j["aead"] = {{"alg","aes-256-gcm"},{"iv",b64enc(vf.iv)},{"aad",vf.aad},{"ct",b64enc(vf.ct)},{"tag",b64enc(vf.tag)}};
+    j["aead"] = {{"alg","aes-256-gcm"},{"iv",b64enc(vf.iv)},{"aad",b64enc(vf.aad)},{"ct",b64enc(vf.ct)},{"tag",b64enc(vf.tag)}};
     return j.dump();
 }
 static VaultFile parse_vault(const std::string& s) {
@@ -134,19 +137,20 @@ static VaultFile parse_vault(const std::string& s) {
     vf.ct=b64dec(ct_b64); hmac_cpp::secure_zero(&ct_b64[0], ct_b64.size());
     std::string tag_b64 = ja.at("tag").get<std::string>();
     vf.tag=b64dec(tag_b64); hmac_cpp::secure_zero(&tag_b64[0], tag_b64.size()); if(vf.tag.size()!=16) throw std::runtime_error("bad tag size");
-    vf.aad=ja.value("aad","");
+    std::string aad_b64 = ja.value("aad","");
+    vf.aad=b64dec(aad_b64); hmac_cpp::secure_zero(&aad_b64[0], aad_b64.size());
     return vf;
 }
-static VaultFile create_vault(const hmac_cpp::secret_string& master,const std::string& email,const hmac_cpp::secret_string& password,uint32_t iters,const std::string& aad){
-    VaultFile vf; vf.v=1; vf.iters=iters; auto salt_vec=hmac_cpp::random_bytes(16); if(salt_vec.size()!=16) throw std::runtime_error("rng"); vf.salt=hmac_cpp::secure_buffer<uint8_t,true>(std::move(salt_vec)); auto key=derive_key(master,vf.salt,iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); std::string pass_copy=password.reveal_copy(); json payload={{"email",email},{"password",pass_copy}}; hmac_cpp::secure_zero(&pass_copy[0],pass_copy.size()); std::string payload_str=payload.dump(); hmac_cpp::secure_buffer<uint8_t,true> plain(std::move(payload_str)); std::vector<uint8_t> aadb(aad.begin(),aad.end()); std::vector<uint8_t> plain_vec(plain.begin(),plain.end()); auto enc=aes_cpp::utils::encrypt_gcm(plain_vec,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(plain_vec.data(),plain_vec.size()); vf.iv=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.iv.begin(),enc.iv.end())); vf.ct=hmac_cpp::secure_buffer<uint8_t,true>(std::move(enc.ciphertext)); vf.tag=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.tag.begin(),enc.tag.end())); vf.aad=aad; return vf; }
-static json open_vault(const hmac_cpp::secret_string& master,const VaultFile& vf){ auto key=derive_key(master,vf.salt,vf.iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); std::array<uint8_t,12> iv{}; std::copy(vf.iv.begin(),vf.iv.begin()+iv.size(),iv.begin()); std::array<uint8_t,16> tag{}; std::copy(vf.tag.begin(),vf.tag.begin()+tag.size(),tag.begin()); std::vector<uint8_t> aadb(vf.aad.begin(),vf.aad.end()); std::vector<uint8_t> ct_vec(vf.ct.begin(),vf.ct.end()); aes_cpp::utils::GcmEncryptedData pkt{std::chrono::system_clock::now(),iv,ct_vec,tag}; auto plain_vec=aes_cpp::utils::decrypt_gcm(pkt,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(ct_vec.data(),ct_vec.size()); auto r=json::parse(plain_vec.begin(),plain_vec.end()); hmac_cpp::secure_zero(plain_vec.data(),plain_vec.size()); return r; }
+static VaultFile create_vault(const hmac_cpp::secret_string& master,const std::string& email,const hmac_cpp::secret_string& password,uint32_t iters){
+    VaultFile vf; vf.v=1; vf.iters=iters; auto salt_vec=hmac_cpp::random_bytes(16); if(salt_vec.size()!=16) throw std::runtime_error("rng"); vf.salt=hmac_cpp::secure_buffer<uint8_t,true>(std::move(salt_vec)); auto key=derive_key(master,vf.salt,iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); std::string pass_copy=password.reveal_copy(); json payload={{"email",email},{"password",pass_copy}}; hmac_cpp::secure_zero(&pass_copy[0],pass_copy.size()); std::string payload_str=payload.dump(); hmac_cpp::secure_buffer<uint8_t,true> plain(std::move(payload_str)); std::vector<uint8_t> aadb(aad.data(),aad.data()+aad.size()); std::vector<uint8_t> plain_vec(plain.begin(),plain.end()); auto enc=aes_cpp::utils::encrypt_gcm(plain_vec,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(plain_vec.data(),plain_vec.size()); hmac_cpp::secure_zero(aadb.data(),aadb.size()); vf.iv=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.iv.begin(),enc.iv.end())); vf.ct=hmac_cpp::secure_buffer<uint8_t,true>(std::move(enc.ciphertext)); vf.tag=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(enc.tag.begin(),enc.tag.end())); vf.aad=hmac_cpp::secure_buffer<uint8_t,true>(std::vector<uint8_t>(aad.data(),aad.data()+aad.size())); return vf; }
+static json open_vault(const hmac_cpp::secret_string& master,const VaultFile& vf){ auto key=derive_key(master,vf.salt,vf.iters); std::array<uint8_t,32> key_arr{}; std::copy(key.begin(),key.begin()+key_arr.size(),key_arr.begin()); std::array<uint8_t,12> iv{}; std::copy(vf.iv.begin(),vf.iv.begin()+iv.size(),iv.begin()); std::array<uint8_t,16> tag{}; std::copy(vf.tag.begin(),vf.tag.begin()+tag.size(),tag.begin()); std::vector<uint8_t> aadb(vf.aad.begin(),vf.aad.end()); std::vector<uint8_t> ct_vec(vf.ct.begin(),vf.ct.end()); aes_cpp::utils::GcmEncryptedData pkt{std::chrono::system_clock::now(),iv,ct_vec,tag}; auto plain_vec=aes_cpp::utils::decrypt_gcm(pkt,key_arr,aadb); hmac_cpp::secure_zero(key_arr.data(),key_arr.size()); hmac_cpp::secure_zero(ct_vec.data(),ct_vec.size()); hmac_cpp::secure_zero(aadb.data(),aadb.size()); auto r=json::parse(plain_vec.begin(),plain_vec.end()); hmac_cpp::secure_zero(plain_vec.data(),plain_vec.size()); return r; }
 
 static std::string b64url_encode(const hmac_cpp::secure_buffer<uint8_t, true>& d){ auto s=b64enc(d); std::replace(s.begin(),s.end(),'+','-'); std::replace(s.begin(),s.end(),'/','_'); while(!s.empty()&&s.back()=='=') s.pop_back(); return s; }
 static hmac_cpp::secure_buffer<uint8_t, true> b64url_decode(std::string s){ std::string t=s; hmac_cpp::secure_zero(&s[0],s.size()); std::replace(t.begin(),t.end(),'-','+'); std::replace(t.begin(),t.end(),'_','/'); while(t.size()%4) t.push_back('='); auto r=b64dec(t); hmac_cpp::secure_zero(&t[0],t.size()); return r; }
 
 static void test_json(){
     const hmac_cpp::secret_string master("m"); const std::string email="e"; const hmac_cpp::secret_string pass("p");
-    auto vf=create_vault(master,email,pass,100000,"t");
+    auto vf=create_vault(master,email,pass,100000);
     auto text=serialize_vault(vf);
     auto parsed=parse_vault(text);
     auto payload=open_vault(master,parsed);
@@ -167,7 +171,7 @@ static void test_json(){
 
 static void test_jwr(){
     const hmac_cpp::secret_string master("m"); const std::string email="e"; const hmac_cpp::secret_string pass("p");
-    auto vf=create_vault(master,email,pass,100000,"t");
+    auto vf=create_vault(master,email,pass,100000);
     std::string header=json({{"typ","JWR"}}).dump();
     std::string body=serialize_vault(vf);
     std::string token=b64url_encode(hmac_cpp::secure_buffer<uint8_t,true>(std::string(header)))+"."+b64url_encode(hmac_cpp::secure_buffer<uint8_t,true>(std::string(body)));

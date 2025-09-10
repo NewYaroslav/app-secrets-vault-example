@@ -21,6 +21,8 @@
 
 using Pepper = pepper::Provider;
 
+static const auto aad = OBFY_BYTES_ONCE("app://secrets/blob/v1");
+
 static std::vector<uint8_t> to_bytes(const std::string& s) {
     return std::vector<uint8_t>(s.begin(), s.end());
 }
@@ -87,9 +89,7 @@ bool write_vault(const std::string& path,
     try {
         const hmac_cpp::secret_string& master = passphrase;
         const uint32_t iters = 300000;
-        auto aad_tmp = OBFY_BYTES_ONCE("demo1");
-        hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
-            std::vector<uint8_t>(aad_tmp.data(), aad_tmp.data() + aad_tmp.size()));
+        std::vector<uint8_t> aad_bytes(aad.data(), aad.data() + aad.size());
 
         std::string pass_copy = passphrase.reveal_copy();
         std::string payload = email + ":" + pass_copy;
@@ -101,11 +101,11 @@ bool write_vault(const std::string& path,
         auto salt = hmac_cpp::secure_buffer<uint8_t, true>(hmac_cpp::random_bytes(16));
         auto key  = derive_key(master, salt, iters);
 
-        std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
         std::vector<uint8_t> plain_vec(plain_buf.begin(), plain_buf.end());
         auto enc = aes_cpp::utils::encrypt_gcm(plain_vec, key, aad_bytes);
         hmac_cpp::secure_zero(key.data(), key.size());
         hmac_cpp::secure_zero(plain_vec.data(), plain_vec.size());
+        hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
 
         auto iv  = hmac_cpp::secure_buffer<uint8_t, true>(std::vector<uint8_t>(enc.iv.begin(), enc.iv.end()));
         auto tag = hmac_cpp::secure_buffer<uint8_t, true>(std::vector<uint8_t>(enc.tag.begin(), enc.tag.end()));
@@ -152,8 +152,7 @@ bool read_vault(const std::string& path,
 
         auto key = derive_key(master, salt, iters);
 
-        auto aad_tmp = OBFY_BYTES_ONCE("demo1");
-        std::vector<uint8_t> aad_bytes(aad_tmp.data(), aad_tmp.data()+aad_tmp.size());
+        std::vector<uint8_t> aad_bytes(aad.data(), aad.data()+aad.size());
         aes_cpp::utils::GcmEncryptedData packet;
         std::copy(iv.begin(), iv.begin()+packet.iv.size(), packet.iv.begin());
         std::vector<uint8_t> ct_vec(ct.begin(), ct.end());

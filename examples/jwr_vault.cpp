@@ -24,6 +24,8 @@
 using json = nlohmann::json;
 using Pepper = pepper::Provider;
 
+static const auto aad = OBFY_BYTES_ONCE("app://secrets/blob/v1");
+
 enum class VaultError {
     ERR_FORMAT = 1,
     ERR_KDF_PARAM,
@@ -45,7 +47,7 @@ struct VaultFile {
     hmac_cpp::secure_buffer<uint8_t, true> iv;
     hmac_cpp::secure_buffer<uint8_t, true> tag;
     hmac_cpp::secure_buffer<uint8_t, true> ct;
-    std::string aad;
+    hmac_cpp::secure_buffer<uint8_t, true> aad;
 };
 
 static std::vector<uint8_t> to_bytes(const std::string& s) {
@@ -102,7 +104,7 @@ static std::string serialize_vault(const VaultFile& vf) {
         {"tag", b64enc(vf.tag)}
     };
     j["ciphertext"] = b64enc(vf.ct);
-    if (!vf.aad.empty()) j["aad"] = vf.aad;
+    if (vf.aad.size()) j["aad"] = b64enc(vf.aad);
     return j.dump();
 }
 
@@ -143,7 +145,12 @@ static expected<VaultFile, VaultError> parse_vault(const std::string& s) {
         if (std::holds_alternative<VaultError>(ct_res))
             return std::get<VaultError>(ct_res);
         vf.ct   = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(ct_res));
-        vf.aad  = j.value("aad", "");
+        std::string aad_b64 = j.value("aad", "");
+        auto aad_res = b64dec(aad_b64);
+        hmac_cpp::secure_zero(&aad_b64[0], aad_b64.size());
+        if (std::holds_alternative<VaultError>(aad_res))
+            return std::get<VaultError>(aad_res);
+        vf.aad  = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(aad_res));
         return vf;
     } catch (...) {
         return VaultError::ERR_FORMAT;
@@ -171,8 +178,7 @@ static expected<VaultFile, VaultError>
 create_vault(const hmac_cpp::secret_string& master_password,
              const std::string& email,
              const hmac_cpp::secret_string& password,
-             uint32_t iters = 300000,
-             const std::string& aad = "") {
+             uint32_t iters = 300000) {
     VaultFile vf;
     vf.v = 1;
     vf.iters = iters;
@@ -192,18 +198,10 @@ create_vault(const hmac_cpp::secret_string& master_password,
     std::string payload_str = payload.dump();
     hmac_cpp::secure_buffer<uint8_t, true> plain(std::move(payload_str));
 
-    hmac_cpp::secure_buffer<uint8_t, true> aad_buf;
-    if (aad.empty()) {
-        auto aad_tmp = OBFY_BYTES_ONCE("app=demo;v=1");
-        aad_buf = hmac_cpp::secure_buffer<uint8_t, true>(
-            std::vector<uint8_t>(aad_tmp.data(), aad_tmp.data() + aad_tmp.size()));
-        vf.aad.assign(aad_tmp.data(), aad_tmp.data() + aad_tmp.size());
-    } else {
-        aad_buf = hmac_cpp::secure_buffer<uint8_t, true>(
-            std::vector<uint8_t>(aad.begin(), aad.end()));
-        vf.aad = aad;
-    }
+    hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
+        std::vector<uint8_t>(aad.data(), aad.data() + aad.size()));
     std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
+    vf.aad = aad_buf;
     std::vector<uint8_t> plain_vec(plain.begin(), plain.end());
     auto enc = aes_cpp::utils::encrypt_gcm(plain_vec, key_arr, aad_bytes);
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
@@ -230,9 +228,7 @@ open_vault(const hmac_cpp::secret_string& master_password, const VaultFile& vf) 
     if (vf.tag.size()!=tag.size()) return VaultError::ERR_GCM_TAG;
     std::copy(vf.tag.begin(), vf.tag.begin()+tag.size(), tag.begin());
 
-    hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
-        std::vector<uint8_t>(vf.aad.begin(), vf.aad.end()));
-    std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
+    std::vector<uint8_t> aad_bytes(vf.aad.begin(), vf.aad.end());
     std::vector<uint8_t> ct_vec(vf.ct.begin(), vf.ct.end());
     aes_cpp::utils::GcmEncryptedData pkt{std::chrono::system_clock::now(), iv, ct_vec, tag};
     std::vector<uint8_t> plain_vec;

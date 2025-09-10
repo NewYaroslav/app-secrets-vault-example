@@ -13,6 +13,8 @@
 
 namespace pepper::encrypted_file {
 
+    static const auto aad = OBFY_BYTES_ONCE("app://secrets/blob/v1");
+
     static std::string resolve_path(const Config& cfg) {
         if (!cfg.file_path.empty()) return cfg.file_path;
         #ifdef _WIN32
@@ -21,14 +23,14 @@ namespace pepper::encrypted_file {
         if (_dupenv_s(&home, &home_sz, "USERPROFILE") == 0 && home) {
             std::string path(home);
             free(home);
-            return path + "\\pepper.bin";
+            return path + std::string(OBFY_STR("\\pepper.bin"));
         }
         #else
         if (const char* home = std::getenv("HOME")) {
-            return std::string(home) + "/pepper.bin";
+            return std::string(home) + std::string(OBFY_STR("/pepper.bin"));
         }
         #endif
-        return "pepper.bin";
+        return std::string(OBFY_STR("pepper.bin"));
     }
     
     bool store(const Config& cfg, const std::vector<uint8_t>& data) {
@@ -41,7 +43,8 @@ namespace pepper::encrypted_file {
         auto key = hmac_cpp::hkdf_expand_sha256(prk, std::vector<uint8_t>(ctx.begin(), ctx.end()), 32);
         std::array<uint8_t,32> key_arr{};
         std::copy(key.begin(), key.end(), key_arr.begin());
-        auto enc = aes_cpp::utils::encrypt_gcm(data, key_arr, {});
+        std::vector<uint8_t> aad_bytes(aad.data(), aad.data() + aad.size());
+        auto enc = aes_cpp::utils::encrypt_gcm(data, key_arr, aad_bytes);
         if (enc.iv.size() != 12 || enc.ciphertext.size() != data.size() || enc.tag.size() != 16) {
             hmac_cpp::secure_zero(ms.data(), ms.size());
             hmac_cpp::secure_zero(prk.data(), prk.size());
@@ -69,6 +72,7 @@ namespace pepper::encrypted_file {
         of.write(reinterpret_cast<const char*>(enc.ciphertext.data()), enc.ciphertext.size());
         of.write(reinterpret_cast<const char*>(enc.tag.data()), enc.tag.size());
         bool ok = of.good();
+        hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
         hmac_cpp::secure_zero(ms.data(), ms.size());
         hmac_cpp::secure_zero(prk.data(), prk.size());
         hmac_cpp::secure_zero(key.data(), key.size());
@@ -110,7 +114,8 @@ namespace pepper::encrypted_file {
         packet.iv = iv;
         packet.ciphertext = ct;
         packet.tag = tag;
-        out = aes_cpp::utils::decrypt_gcm(packet, key_arr, {});
+        std::vector<uint8_t> aad_bytes(aad.data(), aad.data() + aad.size());
+        out = aes_cpp::utils::decrypt_gcm(packet, key_arr, aad_bytes);
         bool ok = out.size() == 32;
         hmac_cpp::secure_zero(ms.data(), ms.size());
         hmac_cpp::secure_zero(prk.data(), prk.size());
@@ -118,6 +123,7 @@ namespace pepper::encrypted_file {
         hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
         hmac_cpp::secure_zero(ct.data(), ct.size());
         hmac_cpp::secure_zero(packet.ciphertext.data(), packet.ciphertext.size());
+        hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
         if (!ok) {
             hmac_cpp::secure_zero(out.data(), out.size());
         }
