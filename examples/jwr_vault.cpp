@@ -61,6 +61,7 @@ static std::string to_string(const std::vector<uint8_t>& v) {
 static std::string b64enc(const hmac_cpp::secure_buffer<uint8_t, true>& v) {
     return hmac_cpp::base64_encode(v.data(), v.size());
 }
+// Decode `s` from Base64 into `out`; reject non-Base64 input.
 static bool b64dec(const std::string& s,
                    hmac_cpp::secure_buffer<uint8_t, true>& out) {
     std::vector<uint8_t> tmp;
@@ -110,37 +111,39 @@ static std::string serialize_vault(const VaultFile& vf) {
     return j.dump();
 }
 
+// Parse vault JSON and validate expected parameters.
+// Only a boolean result is returned to keep failures generic.
 static bool parse_vault(const std::string& s, VaultFile& vf) {
     try {
         auto j = json::parse(s);
         vf.v = j.at("v").get<uint32_t>();
-        if (vf.v != 1) return false;
+        if (vf.v != 1) return false; // only version 1 supported
         auto jk = j.at("kdf");
         auto kdf_alg = jk.value("alg", jk.value("name", ""));
         std::transform(kdf_alg.begin(), kdf_alg.end(), kdf_alg.begin(),
                        [](unsigned char c){ return std::tolower(c); });
-        if (kdf_alg != "pbkdf2-hmac-sha256") return false;
+        if (kdf_alg != "pbkdf2-hmac-sha256") return false; // unsupported KDF
         vf.iters = jk.at("iters").get<uint32_t>();
         if (vf.iters < 100000 || vf.iters > 1000000)
-            return false;
+            return false; // enforce PBKDF2 iteration range
         std::string salt_b64 = jk.at("salt").get<std::string>();
         if (!b64dec(salt_b64, vf.salt)) return false;
         hmac_cpp::secure_zero(&salt_b64[0], salt_b64.size());
-        if (vf.salt.size() < 16) return false;
+        if (vf.salt.size() < 16) return false; // min salt length
 
         auto ja = j.at("aead");
         auto aead_alg = ja.value("alg", "");
         std::transform(aead_alg.begin(), aead_alg.end(), aead_alg.begin(),
                        [](unsigned char c){ return std::tolower(c); });
-        if (aead_alg != "aes-256-gcm") return false;
+        if (aead_alg != "aes-256-gcm") return false; // unsupported AEAD
         std::string iv_b64 = ja.at("iv").get<std::string>();
         if (!b64dec(iv_b64, vf.iv)) return false;
         hmac_cpp::secure_zero(&iv_b64[0], iv_b64.size());
-        if (vf.iv.size() != 12) return false;
+        if (vf.iv.size() != 12) return false; // GCM standard IV size
         std::string tag_b64 = ja.at("tag").get<std::string>();
         if (!b64dec(tag_b64, vf.tag)) return false;
         hmac_cpp::secure_zero(&tag_b64[0], tag_b64.size());
-        if (vf.tag.size() != 16) return false;
+        if (vf.tag.size() != 16) return false; // GCM tag size
 
         std::string ct_b64 = j.at("ciphertext").get<std::string>();
         if (!b64dec(ct_b64, vf.ct)) return false;
@@ -150,6 +153,7 @@ static bool parse_vault(const std::string& s, VaultFile& vf) {
         hmac_cpp::secure_zero(&aad_b64[0], aad_b64.size());
         return true;
     } catch (...) {
+        // Swallow details; callers only see success/failure.
         return false;
     }
 }

@@ -50,6 +50,8 @@ struct VaultFile {
     hmac_cpp::secure_buffer<uint8_t, true> aad;
 };
 
+// Decode `s` from Base64 into `out`.
+// Returns `false` if the input isn't valid Base64 so callers can reject it.
 static bool b64dec(const std::string& s,
                    hmac_cpp::secure_buffer<uint8_t, true>& out) {
     std::vector<uint8_t> tmp;
@@ -104,40 +106,43 @@ static std::string serialize_vault(const VaultFile& vf) {
     return j.dump(2);
 }
 
+// Parse and validate a vault blob, returning only success/failure.
+// The generic return avoids leaking which field was invalid.
 static bool parse_vault(const std::string& s, VaultFile& vf) {
     try {
         auto j = json::parse(s);
         vf.v = j.at("v").get<uint32_t>();
-        if (vf.v != 1) return false;
+        if (vf.v != 1) return false; // only version 1 supported
         auto jk = j.at("kdf");
         if (jk.at("alg").get<std::string>() != "pbkdf2-hmac-sha256")
-            return false;
+            return false; // unsupported KDF
         vf.iters = jk.at("iters").get<uint32_t>();
         if (vf.iters < 100000 || vf.iters > 1000000)
-            return false;
+            return false; // enforce PBKDF2 iteration range
         std::string salt_b64 = jk.at("salt").get<std::string>();
         if (!b64dec(salt_b64, vf.salt)) return false;
         hmac_cpp::secure_zero(&salt_b64[0], salt_b64.size());
         if (vf.salt.size() < 16) return false;
         auto ja = j.at("aead");
         if (ja.at("alg").get<std::string>() != "aes-256-gcm")
-            return false;
+            return false; // unsupported AEAD
         std::string iv_b64 = ja.at("iv").get<std::string>();
         if (!b64dec(iv_b64, vf.iv)) return false;
         hmac_cpp::secure_zero(&iv_b64[0], iv_b64.size());
-        if (vf.iv.size() != 12) return false;
+        if (vf.iv.size() != 12) return false; // GCM standard IV size
         std::string ct_b64 = ja.at("ct").get<std::string>();
         if (!b64dec(ct_b64, vf.ct)) return false;
         hmac_cpp::secure_zero(&ct_b64[0], ct_b64.size());
         std::string tag_b64 = ja.at("tag").get<std::string>();
         if (!b64dec(tag_b64, vf.tag)) return false;
         hmac_cpp::secure_zero(&tag_b64[0], tag_b64.size());
-        if (vf.tag.size() != 16) return false;
+        if (vf.tag.size() != 16) return false; // GCM tag size
         std::string aad_b64 = ja.value("aad", "");
         if (!b64dec(aad_b64, vf.aad)) return false;
         hmac_cpp::secure_zero(&aad_b64[0], aad_b64.size());
         return true;
     } catch (...) {
+        // Parsing errors are reported only via the boolean result.
         return false;
     }
 }
