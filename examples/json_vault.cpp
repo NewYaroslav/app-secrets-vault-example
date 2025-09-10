@@ -22,6 +22,7 @@
 #include "json.hpp"
 #include "file_io.hpp"
 using json = nlohmann::json;
+using Pepper = pepper::Provider;
 
 enum class VaultError {
     ERR_FORMAT = 1,
@@ -230,54 +231,70 @@ open_vault(const std::string& master_password, const VaultFile& vf) {
     }
 }
 
-int main(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg.rfind("--pepper=", 0) == 0) g_pepper_mode = arg.substr(9);
-        else if (arg == "--deny-fallback") g_deny_fallback = true;
-    }
-
-    const std::string master = "correct horse battery staple";
-    const std::string email   = "user@example.com";
-    const std::string pass    = "s3cr3t!";
-
+bool write_vault(const std::string& path,
+                 const std::string& email,
+                 const std::string& passphrase,
+                 Pepper& pepper) {
+    (void)pepper;
     auto aad_tmp = OBFY_BYTES_ONCE("app://secrets/blob/v1");
     std::string aad(reinterpret_cast<const char*>(aad_tmp.data()), aad_tmp.size());
-    auto vf_res = create_vault(master, email, pass, 300000, aad);
+    auto vf_res = create_vault(passphrase, email, passphrase, 300000, aad);
     if (std::holds_alternative<VaultError>(vf_res)) {
         log_error(std::get<VaultError>(vf_res));
-        return 1;
+        return false;
     }
     auto vf = std::get<VaultFile>(std::move(vf_res));
     auto text = serialize_vault(vf);
-    demo::atomic_write_file("vault.json", text);
-    std::cout << "Saved JSON:\n" << text << "\n";
+    demo::atomic_write_file(path, text);
     hmac_cpp::secure_zero(&text[0], text.size());
-    text.clear();
+    return true;
+}
 
-    std::ifstream ifs("vault.json");
+bool read_vault(const std::string& path,
+                std::string& out_email,
+                std::string& out_password,
+                const std::string& passphrase,
+                Pepper& pepper) {
+    (void)pepper;
+    std::ifstream ifs(path);
     std::stringstream buffer; buffer << ifs.rdbuf();
     std::string blob = buffer.str();
     auto pv = parse_vault(blob);
     hmac_cpp::secure_zero(&blob[0], blob.size());
-    blob.clear();
     if (std::holds_alternative<VaultError>(pv)) {
         log_error(std::get<VaultError>(pv));
-        return 1;
+        return false;
     }
-    VaultFile vf2 = std::get<VaultFile>(std::move(pv));
-    auto payload_res = open_vault(master, vf2);
+    VaultFile vf = std::get<VaultFile>(std::move(pv));
+    auto payload_res = open_vault(passphrase, vf);
     if (std::holds_alternative<VaultError>(payload_res)) {
         log_error(std::get<VaultError>(payload_res));
-        return 1;
+        return false;
     }
     auto payload = std::get<json>(std::move(payload_res));
-    hmac_cpp::secret_string em(payload.at("email").get<std::string>());
-    hmac_cpp::secret_string pw(payload.at("password").get<std::string>());
-    std::cout << "Decrypted email: "    << em.reveal_copy() << "\n";
-    std::cout << "Decrypted password: " << pw.reveal_copy() << "\n";
-    em.clear();
-    pw.clear();
+    out_email = payload.at("email").get<std::string>();
+    out_password = payload.at("password").get<std::string>();
+    return true;
+}
+
+int main(int argc, char** argv) {
+    std::vector<std::string> pos;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg.rfind("--pepper=", 0) == 0) g_pepper_mode = arg.substr(9);
+        else if (arg == "--deny-fallback") g_deny_fallback = true;
+        else pos.push_back(arg);
+    }
+    if (pos.size() < 3) {
+        std::cerr << "Usage: " << argv[0] << " [--pepper=MODE] [--deny-fallback] <path> <email> <passphrase>\n";
+        return 1;
+    }
+    Pepper& prov = provider();
+    if (!write_vault(pos[0], pos[1], pos[2], prov)) return 1;
+    std::string out_email, out_password;
+    if (!read_vault(pos[0], out_email, out_password, pos[2], prov)) return 1;
+    std::cout << "Decrypted email: "    << out_email << "\n";
+    std::cout << "Decrypted password: " << out_password << "\n";
     return 0;
 }
 

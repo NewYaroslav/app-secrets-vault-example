@@ -21,6 +21,7 @@
 #include "json.hpp"
 #include "file_io.hpp"
 using json = nlohmann::json;
+using Pepper = pepper::Provider;
 
 enum class VaultError {
     ERR_FORMAT = 1,
@@ -303,36 +304,57 @@ open_token(const std::string& master, const std::string& token) {
     return payload;
 }
 
-int main() {
-    const std::string master = "correct horse battery staple";
-    const std::string email   = "user@example.com";
-    const std::string pass    = "s3cr3t!";
-
-    auto token_res = create_token(master, email, pass);
+bool write_vault(const std::string& path,
+                 const std::string& email,
+                 const std::string& passphrase,
+                 Pepper& pepper) {
+    (void)pepper;
+    auto token_res = create_token(passphrase, email, passphrase);
     if (std::holds_alternative<VaultError>(token_res)) {
         log_error(std::get<VaultError>(token_res));
-        return 1;
+        return false;
     }
     auto token = std::get<std::string>(std::move(token_res));
-    demo::atomic_write_file("vault.jwr", token);
-    std::cout << "Token: " << token << "\n";
+    demo::atomic_write_file(path, token);
     hmac_cpp::secure_zero(&token[0], token.size());
-    token.clear();
+    return true;
+}
 
+bool read_vault(const std::string& path,
+                std::string& out_email,
+                std::string& out_password,
+                const std::string& passphrase,
+                Pepper& pepper) {
+    (void)pepper;
     std::string read_token;
-    std::ifstream("vault.jwr") >> read_token;
-    auto payload_res = open_token(master, read_token);
+    std::ifstream(path) >> read_token;
+    auto payload_res = open_token(passphrase, read_token);
     if (std::holds_alternative<VaultError>(payload_res)) {
         log_error(std::get<VaultError>(payload_res));
-        return 1;
+        return false;
     }
     auto payload = std::get<json>(std::move(payload_res));
-    hmac_cpp::secret_string em(payload.at("email").get<std::string>());
-    hmac_cpp::secret_string pw(payload.at("password").get<std::string>());
-    std::cout << "Decrypted email: "    << em.reveal_copy() << "\n";
-    std::cout << "Decrypted password: " << pw.reveal_copy() << "\n";
-    em.clear();
-    pw.clear();
+    out_email = payload.at("email").get<std::string>();
+    out_password = payload.at("password").get<std::string>();
+    return true;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " <path> <email> <passphrase>\n";
+        return 1;
+    }
+    pepper::Config cfg;
+    auto kid_tmp = OBFY_STR_ONCE("pepper:v1");
+    cfg.key_id = std::string(kid_tmp);
+    auto s_tmp = OBFY_BYTES_ONCE("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10");
+    cfg.app_salt = std::vector<uint8_t>(s_tmp.data(), s_tmp.data()+s_tmp.size());
+    Pepper prov(cfg);
+    if (!write_vault(argv[1], argv[2], argv[3], prov)) return 1;
+    std::string out_email, out_password;
+    if (!read_vault(argv[1], out_email, out_password, argv[3], prov)) return 1;
+    std::cout << "Decrypted email: "    << out_email << "\n";
+    std::cout << "Decrypted password: " << out_password << "\n";
     return 0;
 }
 
