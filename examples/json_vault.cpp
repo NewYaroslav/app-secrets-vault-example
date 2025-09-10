@@ -24,6 +24,8 @@
 using json = nlohmann::json;
 using Pepper = pepper::Provider;
 
+static const auto aad = OBFY_BYTES_ONCE("app://secrets/blob/v1");
+
 enum class VaultError {
     ERR_FORMAT = 1,
     ERR_KDF_PARAM,
@@ -45,7 +47,7 @@ struct VaultFile {
     hmac_cpp::secure_buffer<uint8_t, true> iv;
     hmac_cpp::secure_buffer<uint8_t, true> tag;
     hmac_cpp::secure_buffer<uint8_t, true> ct;
-    std::string aad;
+    hmac_cpp::secure_buffer<uint8_t, true> aad;
 };
 
 static expected<hmac_cpp::secure_buffer<uint8_t, true>, VaultError>
@@ -60,7 +62,7 @@ static std::string b64enc(const hmac_cpp::secure_buffer<uint8_t, true>& v) {
 }
 
 // runtime flags parsed from command line
-static std::string g_pepper_mode = "keystore";
+static std::string g_pepper_mode = std::string(OBFY_STR("keystore"));
 static bool g_deny_fallback = false;
 
 static const char* kPepperKeyId = OBFY_STR("com.newyaroslav.app/v1/pepper");
@@ -72,8 +74,8 @@ static pepper::Provider& provider() {
         cfg.key_id = kPepperKeyId;
         auto s = OBFY_BYTES("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10");
         cfg.app_salt = std::vector<uint8_t>(s, s + 16);
-        if (g_pepper_mode == "derived") cfg.primary = pepper::StorageMode::MACHINE_BOUND;
-        else if (g_pepper_mode == "file") cfg.primary = pepper::StorageMode::ENCRYPTED_FILE;
+        if (g_pepper_mode == std::string(OBFY_STR("derived"))) cfg.primary = pepper::StorageMode::MACHINE_BOUND;
+        else if (g_pepper_mode == std::string(OBFY_STR("file"))) cfg.primary = pepper::StorageMode::ENCRYPTED_FILE;
         else cfg.primary = pepper::StorageMode::OS_KEYCHAIN;
         if (g_deny_fallback) cfg.fallbacks.clear();
         prov = std::make_unique<pepper::Provider>(cfg);
@@ -97,7 +99,7 @@ static std::string serialize_vault(const VaultFile& vf) {
     json j;
     j["v"] = vf.v;
     j["kdf"] = {{"alg", "pbkdf2-hmac-sha256"}, {"iters", vf.iters}, {"salt", b64enc(vf.salt)}};
-    j["aead"] = {{"alg", "aes-256-gcm"}, {"iv", b64enc(vf.iv)}, {"aad", vf.aad}, {"ct", b64enc(vf.ct)}, {"tag", b64enc(vf.tag)}};
+    j["aead"] = {{"alg", "aes-256-gcm"}, {"iv", b64enc(vf.iv)}, {"aad", b64enc(vf.aad)}, {"ct", b64enc(vf.ct)}, {"tag", b64enc(vf.tag)}};
     return j.dump(2);
 }
 
@@ -144,7 +146,12 @@ static expected<VaultFile, VaultError> parse_vault(const std::string& s) {
             return std::get<VaultError>(tag_res);
         vf.tag = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(tag_res));
         if (vf.tag.size() != 16) return VaultError::ERR_GCM_TAG;
-        vf.aad  = ja.value("aad", "");
+        std::string aad_b64 = ja.value("aad", "");
+        auto aad_res = b64dec(aad_b64);
+        hmac_cpp::secure_zero(&aad_b64[0], aad_b64.size());
+        if (std::holds_alternative<VaultError>(aad_res))
+            return std::get<VaultError>(aad_res);
+        vf.aad = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(aad_res));
         return vf;
     } catch (...) {
         return VaultError::ERR_FORMAT;
@@ -172,8 +179,7 @@ static expected<VaultFile, VaultError>
 create_vault(const hmac_cpp::secret_string& master_password,
              const std::string& email,
              const hmac_cpp::secret_string& password,
-             uint32_t iters = 300000,
-             const std::string& aad = "app=demo;v=1") {
+             uint32_t iters = 300000) {
     VaultFile vf;
     vf.v = 1;
     vf.iters = iters;
@@ -193,15 +199,18 @@ create_vault(const hmac_cpp::secret_string& master_password,
     std::string payload_str = payload.dump();
     hmac_cpp::secure_buffer<uint8_t, true> plain(std::move(payload_str));
 
-    std::vector<uint8_t> aad_bytes(aad.begin(), aad.end());
+    hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
+        std::vector<uint8_t>(aad.data(), aad.data() + aad.size()));
+    std::vector<uint8_t> aad_bytes(aad_buf.begin(), aad_buf.end());
     std::vector<uint8_t> plain_vec(plain.begin(), plain.end());
     auto enc = aes_cpp::utils::encrypt_gcm(plain_vec, key_arr, aad_bytes);
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
     hmac_cpp::secure_zero(plain_vec.data(), plain_vec.size());
+    hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
     vf.iv = hmac_cpp::secure_buffer<uint8_t, true>(std::vector<uint8_t>(enc.iv.begin(), enc.iv.end()));
     vf.ct = hmac_cpp::secure_buffer<uint8_t, true>(std::move(enc.ciphertext));
     vf.tag = hmac_cpp::secure_buffer<uint8_t, true>(std::vector<uint8_t>(enc.tag.begin(), enc.tag.end()));
-    vf.aad = aad;
+    vf.aad = aad_buf;
     return vf;
 }
 
@@ -227,8 +236,10 @@ open_vault(const hmac_cpp::secret_string& master_password, const VaultFile& vf) 
     } catch (...) {
         hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
         hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
+        hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
         return VaultError::ERR_GCM_TAG;
     }
+    hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
     hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
     try {
@@ -246,9 +257,7 @@ bool write_vault(const std::string& path,
                  const hmac_cpp::secret_string& passphrase,
                  Pepper& pepper) {
     (void)pepper;
-    auto aad_tmp = OBFY_BYTES_ONCE("app://secrets/blob/v1");
-    std::string aad(reinterpret_cast<const char*>(aad_tmp.data()), aad_tmp.size());
-    auto vf_res = create_vault(passphrase, email, passphrase, 300000, aad);
+    auto vf_res = create_vault(passphrase, email, passphrase, 300000);
     if (std::holds_alternative<VaultError>(vf_res)) {
         log_error(std::get<VaultError>(vf_res));
         return false;
@@ -293,8 +302,8 @@ int main(int argc, char** argv) {
     std::vector<std::string> pos;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg.rfind("--pepper=", 0) == 0) g_pepper_mode = arg.substr(9);
-        else if (arg == "--deny-fallback") g_deny_fallback = true;
+        if (arg.rfind(std::string(OBFY_STR("--pepper=")), 0) == 0) g_pepper_mode = arg.substr(9);
+        else if (arg == std::string(OBFY_STR("--deny-fallback"))) g_deny_fallback = true;
         else pos.push_back(arg);
     }
     if (pos.size() < 3) {
