@@ -1,3 +1,5 @@
+// Force assertions on in Release builds so test invariants are checked.
+#undef NDEBUG
 #include <cassert>
 #include <string>
 #include <vector>
