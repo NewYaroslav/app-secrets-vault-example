@@ -184,7 +184,10 @@ create_vault(const hmac_cpp::secret_string& master_password,
     vf.v = 1;
     vf.iters = iters;
     auto salt_vec = hmac_cpp::random_bytes(16);
-    if (salt_vec.size() != 16) return VaultError::ERR_RNG;
+    if (salt_vec.size() != 16) {
+        hmac_cpp::secure_zero(salt_vec.data(), salt_vec.size());
+        return VaultError::ERR_RNG;
+    }
     vf.salt = hmac_cpp::secure_buffer<uint8_t, true>(std::move(salt_vec));
     auto key_res = derive_key(master_password, vf.salt, iters);
     if (std::holds_alternative<VaultError>(key_res))

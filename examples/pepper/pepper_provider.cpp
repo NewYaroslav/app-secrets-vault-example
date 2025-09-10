@@ -61,12 +61,16 @@ namespace pepper {
                     if (os_keychain::load(pimpl_->cfg.key_id, out))
                         return true;
                     auto p = hmac_cpp::random_bytes(32);
-                    if (p.size() != 32)
+                    if (p.size() != 32) {
+                        hmac_cpp::secure_zero(p.data(), p.size());
                         return false;
+                    }
                     if (os_keychain::store(pimpl_->cfg.key_id, p)) {
                         out = p;
+                        hmac_cpp::secure_zero(p.data(), p.size());
                         return true;
                     }
+                    hmac_cpp::secure_zero(p.data(), p.size());
                 }
                 break;
             case StorageMode::MACHINE_BOUND:
@@ -78,12 +82,16 @@ namespace pepper {
                     return true;
                 {
                     auto p = hmac_cpp::random_bytes(32);
-                    if (p.size() != 32)
+                    if (p.size() != 32) {
+                        hmac_cpp::secure_zero(p.data(), p.size());
                         return false;
+                    }
                     if (encrypted_file::store(pimpl_->cfg, p)) {
                         out = p;
+                        hmac_cpp::secure_zero(p.data(), p.size());
                         return true;
                     }
+                    hmac_cpp::secure_zero(p.data(), p.size());
                 }
                 break;
             }
