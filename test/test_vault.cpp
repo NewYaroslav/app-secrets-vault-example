@@ -20,6 +20,7 @@
 #include <obfy/obfy_bytes.hpp>
 
 #include "../examples/pepper/pepper_provider.hpp"
+#include "../examples/pepper/machine_bound.hpp"
 
 #include "json.hpp"
 using json = nlohmann::json;
@@ -388,7 +389,13 @@ static void test_pepper_fallback(){
     pepper::Config c2=c1; c2.fallbacks={pepper::StorageMode::ENCRYPTED_FILE};
     pepper::Provider p2(c2); std::vector<uint8_t> b; assert(p2.ensure(b));
     hmac_cpp::secure_buffer<uint8_t,true> sa(std::move(a)); hmac_cpp::secure_buffer<uint8_t,true> sb(std::move(b));
-    assert(!hmac_cpp::constant_time_equal(sa.data(),sa.size(),sb.data(),sb.size()));
+    auto ms = pepper::machine_bound::get_machine_secret(c1);
+    if (!ms.empty()) {
+        assert(!hmac_cpp::constant_time_equal(sa.data(),sa.size(),sb.data(),sb.size()));
+    } else {
+        assert(hmac_cpp::constant_time_equal(sa.data(),sa.size(),sb.data(),sb.size()));
+    }
+    hmac_cpp::secure_zero(ms.data(), ms.size());
     hmac_cpp::secure_zero(sa.data(),sa.size()); hmac_cpp::secure_zero(sb.data(),sb.size());
     std::remove(c1.file_path.c_str());
 }
