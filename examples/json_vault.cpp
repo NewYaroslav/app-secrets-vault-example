@@ -113,7 +113,9 @@ static expected<VaultFile, VaultError> parse_vault(const std::string& s) {
         vf.iters = jk.at("iters").get<uint32_t>();
         if (vf.iters < 100000 || vf.iters > 1000000)
             return VaultError::ERR_KDF_PARAM;
-        auto salt_res = b64dec(jk.at("salt").get<std::string>());
+        std::string salt_b64 = jk.at("salt").get<std::string>();
+        auto salt_res = b64dec(salt_b64);
+        hmac_cpp::secure_zero(&salt_b64[0], salt_b64.size());
         if (std::holds_alternative<VaultError>(salt_res))
             return std::get<VaultError>(salt_res);
         vf.salt = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(salt_res));
@@ -122,16 +124,22 @@ static expected<VaultFile, VaultError> parse_vault(const std::string& s) {
         auto ja = j.at("aead");
         if (ja.at("alg").get<std::string>() != "aes-256-gcm")
             return VaultError::ERR_FORMAT;
-        auto iv_res = b64dec(ja.at("iv").get<std::string>());
+        std::string iv_b64 = ja.at("iv").get<std::string>();
+        auto iv_res = b64dec(iv_b64);
+        hmac_cpp::secure_zero(&iv_b64[0], iv_b64.size());
         if (std::holds_alternative<VaultError>(iv_res))
             return std::get<VaultError>(iv_res);
         vf.iv = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(iv_res));
         if (vf.iv.size() != 12) return VaultError::ERR_FORMAT;
-        auto ct_res = b64dec(ja.at("ct").get<std::string>());
+        std::string ct_b64 = ja.at("ct").get<std::string>();
+        auto ct_res = b64dec(ct_b64);
+        hmac_cpp::secure_zero(&ct_b64[0], ct_b64.size());
         if (std::holds_alternative<VaultError>(ct_res))
             return std::get<VaultError>(ct_res);
         vf.ct = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(ct_res));
-        auto tag_res = b64dec(ja.at("tag").get<std::string>());
+        std::string tag_b64 = ja.at("tag").get<std::string>();
+        auto tag_res = b64dec(tag_b64);
+        hmac_cpp::secure_zero(&tag_b64[0], tag_b64.size());
         if (std::holds_alternative<VaultError>(tag_res))
             return std::get<VaultError>(tag_res);
         vf.tag = std::get<hmac_cpp::secure_buffer<uint8_t, true>>(std::move(tag_res));
@@ -144,10 +152,10 @@ static expected<VaultFile, VaultError> parse_vault(const std::string& s) {
 }
 
 static expected<hmac_cpp::secure_buffer<uint8_t, true>, VaultError>
-derive_key(const std::string& password,
+derive_key(const hmac_cpp::secret_string& password,
            const hmac_cpp::secure_buffer<uint8_t, true>& salt,
            uint32_t iters) {
-    std::string pw_copy(password);
+    std::string pw_copy = password.reveal_copy();
     hmac_cpp::secure_buffer<uint8_t, true> pw(std::move(pw_copy));
     auto pep_res = app_pepper();
     if (std::holds_alternative<VaultError>(pep_res))
@@ -161,9 +169,9 @@ derive_key(const std::string& password,
 }
 
 static expected<VaultFile, VaultError>
-create_vault(const std::string& master_password,
+create_vault(const hmac_cpp::secret_string& master_password,
              const std::string& email,
-             const std::string& password,
+             const hmac_cpp::secret_string& password,
              uint32_t iters = 300000,
              const std::string& aad = "app=demo;v=1") {
     VaultFile vf;
@@ -179,7 +187,9 @@ create_vault(const std::string& master_password,
     std::array<uint8_t,32> key_arr{};
     std::copy(key.begin(), key.begin()+key_arr.size(), key_arr.begin());
 
-    json payload = { {"email", email}, {"password", password} };
+    std::string pass_copy = password.reveal_copy();
+    json payload = { {"email", email}, {"password", pass_copy} };
+    hmac_cpp::secure_zero(&pass_copy[0], pass_copy.size());
     std::string payload_str = payload.dump();
     hmac_cpp::secure_buffer<uint8_t, true> plain(std::move(payload_str));
 
@@ -196,7 +206,7 @@ create_vault(const std::string& master_password,
 }
 
 static expected<json, VaultError>
-open_vault(const std::string& master_password, const VaultFile& vf) {
+open_vault(const hmac_cpp::secret_string& master_password, const VaultFile& vf) {
     auto key_res = derive_key(master_password, vf.salt, vf.iters);
     if (std::holds_alternative<VaultError>(key_res))
         return std::get<VaultError>(key_res);
@@ -211,9 +221,9 @@ open_vault(const std::string& master_password, const VaultFile& vf) {
     std::vector<uint8_t> aad_bytes(vf.aad.begin(), vf.aad.end());
     std::vector<uint8_t> ct_vec(vf.ct.begin(), vf.ct.end());
     aes_cpp::utils::GcmEncryptedData pkt{std::chrono::system_clock::now(), iv, ct_vec, tag};
-    std::string plain;
+    std::vector<uint8_t> plain_vec;
     try {
-        plain = aes_cpp::utils::decrypt_gcm_to_string(pkt, key_arr, aad_bytes);
+        plain_vec = aes_cpp::utils::decrypt_gcm(pkt, key_arr, aad_bytes);
     } catch (...) {
         hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
         hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
@@ -222,18 +232,18 @@ open_vault(const std::string& master_password, const VaultFile& vf) {
     hmac_cpp::secure_zero(key_arr.data(), key_arr.size());
     hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
     try {
-        auto j = json::parse(plain);
-        hmac_cpp::secure_zero(&plain[0], plain.size());
+        auto j = json::parse(plain_vec.begin(), plain_vec.end());
+        hmac_cpp::secure_zero(plain_vec.data(), plain_vec.size());
         return j;
     } catch (...) {
-        hmac_cpp::secure_zero(&plain[0], plain.size());
+        hmac_cpp::secure_zero(plain_vec.data(), plain_vec.size());
         return VaultError::ERR_FORMAT;
     }
 }
 
 bool write_vault(const std::string& path,
                  const std::string& email,
-                 const std::string& passphrase,
+                 const hmac_cpp::secret_string& passphrase,
                  Pepper& pepper) {
     (void)pepper;
     auto aad_tmp = OBFY_BYTES_ONCE("app://secrets/blob/v1");
@@ -252,8 +262,8 @@ bool write_vault(const std::string& path,
 
 bool read_vault(const std::string& path,
                 std::string& out_email,
-                std::string& out_password,
-                const std::string& passphrase,
+                hmac_cpp::secret_string& out_password,
+                const hmac_cpp::secret_string& passphrase,
                 Pepper& pepper) {
     (void)pepper;
     std::ifstream ifs(path);
@@ -273,7 +283,9 @@ bool read_vault(const std::string& path,
     }
     auto payload = std::get<json>(std::move(payload_res));
     out_email = payload.at("email").get<std::string>();
-    out_password = payload.at("password").get<std::string>();
+    std::string pwd_tmp = payload.at("password").get<std::string>();
+    out_password = hmac_cpp::secret_string(pwd_tmp);
+    hmac_cpp::secure_zero(&pwd_tmp[0], pwd_tmp.size());
     return true;
 }
 
@@ -290,11 +302,16 @@ int main(int argc, char** argv) {
         return 1;
     }
     Pepper& prov = provider();
-    if (!write_vault(pos[0], pos[1], pos[2], prov)) return 1;
-    std::string out_email, out_password;
-    if (!read_vault(pos[0], out_email, out_password, pos[2], prov)) return 1;
+    hmac_cpp::secret_string passphrase(pos[2]);
+    hmac_cpp::secure_zero(&pos[2][0], pos[2].size());
+    if (!write_vault(pos[0], pos[1], passphrase, prov)) return 1;
+    std::string out_email;
+    hmac_cpp::secret_string out_password;
+    if (!read_vault(pos[0], out_email, out_password, passphrase, prov)) return 1;
     std::cout << "Decrypted email: "    << out_email << "\n";
-    std::cout << "Decrypted password: " << out_password << "\n";
+    auto pass_out = out_password.reveal_copy();
+    std::cout << "Decrypted password: " << pass_out << "\n";
+    hmac_cpp::secure_zero(&pass_out[0], pass_out.size());
     return 0;
 }
 
