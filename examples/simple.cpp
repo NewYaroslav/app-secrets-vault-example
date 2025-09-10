@@ -18,6 +18,8 @@
 #include "pepper/pepper_provider.hpp"
 #include "file_io.hpp"
 
+using Pepper = pepper::Provider;
+
 static std::vector<uint8_t> to_bytes(const std::string& s) {
     return std::vector<uint8_t>(s.begin(), s.end());
 }
@@ -76,21 +78,22 @@ static std::vector<std::string> split(const std::string& s, char delim) {
     return parts;
 }
 
-int main() {
+bool write_vault(const std::string& path,
+                 const std::string& email,
+                 const std::string& passphrase,
+                 Pepper& pepper) {
+    (void)pepper;
     try {
-        hmac_cpp::secret_string master("correct horse battery staple");
-        const std::string email  = "user@example.com";
-        const std::string pass   = "s3cr3t!";
+        hmac_cpp::secret_string master(passphrase);
         const uint32_t iters = 300000;
         auto aad_tmp = OBFY_BYTES_ONCE("demo1");
         hmac_cpp::secure_buffer<uint8_t, true> aad_buf(
             std::vector<uint8_t>(aad_tmp.data(), aad_tmp.data() + aad_tmp.size()));
 
-        std::string payload = email + ":" + pass;
+        std::string payload = email + ":" + passphrase;
         std::vector<uint8_t> payload_vec(payload.begin(), payload.end());
         hmac_cpp::secure_buffer<uint8_t, true> plain_buf(std::move(payload_vec));
         hmac_cpp::secure_zero(&payload[0], payload.size());
-        payload.clear();
 
         auto salt = hmac_cpp::secure_buffer<uint8_t, true>(hmac_cpp::random_bytes(16));
         auto key  = derive_key(master, salt, iters);
@@ -112,43 +115,76 @@ int main() {
             b64enc(tag) + ":" +
             b64enc(ct);
 
-        demo::atomic_write_file("vault_simple.dat", serialized);
+        demo::atomic_write_file(path, serialized);
+        hmac_cpp::secure_zero(&serialized[0], serialized.size());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
+bool read_vault(const std::string& path,
+                std::string& out_email,
+                std::string& out_password,
+                const std::string& passphrase,
+                Pepper& pepper) {
+    (void)pepper;
+    try {
+        hmac_cpp::secret_string master(passphrase);
         std::string in;
-        std::ifstream("vault_simple.dat") >> in;
+        std::ifstream(path) >> in;
         auto parts = split(in, ':');
         hmac_cpp::secure_zero(&in[0], in.size());
-        if (parts.size() != 5) {
-            throw std::runtime_error("bad vault format");
-        }
+        if (parts.size() != 5) return false;
 
-        uint32_t iters2 = static_cast<uint32_t>(std::stoul(parts[0]));
-        auto salt2 = b64dec(parts[1]);
-        auto iv2   = b64dec(parts[2]);
-        auto tag2  = b64dec(parts[3]);
-        auto ct2   = b64dec(parts[4]);
+        uint32_t iters = static_cast<uint32_t>(std::stoul(parts[0]));
+        auto salt = b64dec(parts[1]);
+        auto iv   = b64dec(parts[2]);
+        auto tag  = b64dec(parts[3]);
+        auto ct   = b64dec(parts[4]);
 
-        auto key2 = derive_key(master, salt2, iters2);
+        auto key = derive_key(master, salt, iters);
 
+        auto aad_tmp = OBFY_BYTES_ONCE("demo1");
+        std::vector<uint8_t> aad_bytes(aad_tmp.data(), aad_tmp.data()+aad_tmp.size());
         aes_cpp::utils::GcmEncryptedData packet;
-        std::copy(iv2.begin(), iv2.begin()+packet.iv.size(), packet.iv.begin());
-        std::vector<uint8_t> ct_vec(ct2.begin(), ct2.end());
+        std::copy(iv.begin(), iv.begin()+packet.iv.size(), packet.iv.begin());
+        std::vector<uint8_t> ct_vec(ct.begin(), ct.end());
         packet.ciphertext = ct_vec;
-        std::copy(tag2.begin(), tag2.begin()+packet.tag.size(), packet.tag.begin());
+        std::copy(tag.begin(), tag.begin()+packet.tag.size(), packet.tag.begin());
 
-        std::string plain = aes_cpp::utils::decrypt_gcm_to_string(packet, key2, aad_bytes);
-        hmac_cpp::secure_zero(key2.data(), key2.size());
+        std::string plain = aes_cpp::utils::decrypt_gcm_to_string(packet, key, aad_bytes);
+        hmac_cpp::secure_zero(key.data(), key.size());
         hmac_cpp::secure_zero(ct_vec.data(), ct_vec.size());
 
-        hmac_cpp::secret_string secret(plain);
+        auto fields = split(plain, ':');
         hmac_cpp::secure_zero(&plain[0], plain.size());
-        std::cout << "Decoded: " << secret.reveal_copy() << std::endl;
-        secret.clear();
+        if (fields.size() != 2) return false;
+        out_email = fields[0];
+        out_password = fields[1];
         hmac_cpp::secure_zero(aad_bytes.data(), aad_bytes.size());
-    } catch (const std::exception& e) {
-        std::cerr << "ERR: " << e.what() << std::endl;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+int main(int argc, char** argv) {
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " <path> <email> <passphrase>\n";
         return 1;
     }
+    pepper::Config cfg;
+    auto kid_tmp = OBFY_STR_ONCE("pepper:v1");
+    cfg.key_id = std::string(kid_tmp);
+    auto s_tmp = OBFY_BYTES_ONCE("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10");
+    cfg.app_salt = std::vector<uint8_t>(s_tmp.data(), s_tmp.data()+s_tmp.size());
+    Pepper prov(cfg);
+    if (!write_vault(argv[1], argv[2], argv[3], prov)) return 1;
+    std::string out_email, out_password;
+    if (!read_vault(argv[1], out_email, out_password, argv[3], prov)) return 1;
+    std::cout << "Decrypted email: "    << out_email << std::endl;
+    std::cout << "Decrypted password: " << out_password << std::endl;
     return 0;
 }
 
