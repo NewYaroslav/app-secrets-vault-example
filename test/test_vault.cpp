@@ -384,9 +384,9 @@ static void test_bad_passphrase(){
 }
 
 static void test_pepper_fallback(){
-    pepper::Config c1; c1.primary=pepper::StorageMode::OS_KEYCHAIN; c1.fallbacks={pepper::StorageMode::MACHINE_BOUND,pepper::StorageMode::ENCRYPTED_FILE}; c1.app_salt=salt16(); c1.file_path="pepper_fb.bin";
+    pepper::Config c1; c1.primary=pepper::StorageMode::MACHINE_BOUND; c1.fallbacks={pepper::StorageMode::ENCRYPTED_FILE}; c1.app_salt=salt16(); c1.file_path="pepper_fb.bin";
     pepper::Provider p1(c1); std::vector<uint8_t> a; assert(p1.ensure(a));
-    pepper::Config c2=c1; c2.fallbacks={pepper::StorageMode::ENCRYPTED_FILE};
+    pepper::Config c2=c1; c2.primary=pepper::StorageMode::ENCRYPTED_FILE; c2.fallbacks={};
     pepper::Provider p2(c2); std::vector<uint8_t> b; assert(p2.ensure(b));
     hmac_cpp::secure_buffer<uint8_t,true> sa(std::move(a)); hmac_cpp::secure_buffer<uint8_t,true> sb(std::move(b));
     auto ms = pepper::machine_bound::get_machine_secret(c1);
